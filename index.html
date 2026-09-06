@@ -1,0 +1,2983 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reserve — Bank Operator Simulation</title>
+<style>
+/* ============ design tokens ============ */
+:root{
+  --bg:#eef1f5; --panel:#ffffff; --panel-2:#f7f9fb; --panel-3:#e9eef4;
+  --line:#dde3ea; --line-2:#c6d0db;
+  --text:#111820; --text-2:#4a5766; --text-3:#788594;
+  --accent:#1d63d1; --accent-soft:#e4edfc;
+  --good:#0f7a3d; --good-soft:#e2f4e9;
+  --warn:#96600a; --warn-soft:#faf0da;
+  --bad:#bb2b28; --bad-soft:#fbe6e5;
+  --info:#5546bd; --info-soft:#ebe9fb;
+  --shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.09);
+  --shadow-lg:0 12px 36px rgba(16,24,40,.22);
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --r:8px;
+}
+:root[data-theme="dark"]{
+  --bg:#0d1117; --panel:#151b23; --panel-2:#1b222c; --panel-3:#232c38;
+  --line:#2a333f; --line-2:#3b4553;
+  --text:#e6edf3; --text-2:#a5b2c1; --text-3:#7d8b9b;
+  --accent:#5b9cf8; --accent-soft:#152740;
+  --good:#4bc57e; --good-soft:#122a1d;
+  --warn:#e2a93c; --warn-soft:#2e2410;
+  --bad:#f2726d; --bad-soft:#31191a;
+  --info:#a89bf5; --info-soft:#211e3a;
+  --shadow:0 1px 2px rgba(0,0,0,.4);
+  --shadow-lg:0 12px 36px rgba(0,0,0,.55);
+}
+@media (prefers-color-scheme:dark){
+  :root[data-theme="auto"]{
+    --bg:#0d1117; --panel:#151b23; --panel-2:#1b222c; --panel-3:#232c38;
+    --line:#2a333f; --line-2:#3b4553;
+    --text:#e6edf3; --text-2:#a5b2c1; --text-3:#7d8b9b;
+    --accent:#5b9cf8; --accent-soft:#152740;
+    --good:#4bc57e; --good-soft:#122a1d;
+    --warn:#e2a93c; --warn-soft:#2e2410;
+    --bad:#f2726d; --bad-soft:#31191a;
+    --info:#a89bf5; --info-soft:#211e3a;
+    --shadow:0 1px 2px rgba(0,0,0,.4);
+    --shadow-lg:0 12px 36px rgba(0,0,0,.55);
+  }
+}
+/* ============ base ============ */
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:13px/1.45 var(--sans);
+  -webkit-font-smoothing:antialiased;overflow:hidden}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+h1,h2,h3,h4{margin:0;font-weight:600}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.good{color:var(--good)} .bad{color:var(--bad)} .warn{color:var(--warn)} .muted{color:var(--text-2)}
+.dim{color:var(--text-3)}
+.hidden{display:none!important}
+
+/* ============ app shell ============ */
+#app{display:flex;flex-direction:column;height:100%}
+header.topbar{background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto}
+.topbar-row{display:flex;align-items:center;gap:14px;padding:8px 14px}
+.brand{display:flex;align-items:baseline;gap:9px;min-width:0}
+.brand .mark{font-weight:700;font-size:15px;letter-spacing:-.2px}
+.brand .bank-name{font-weight:600;font-size:13px;color:var(--text-2);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;max-width:220px}
+.tier-badge{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.6px;
+  padding:2px 7px;border-radius:99px;background:var(--accent-soft);color:var(--accent);white-space:nowrap}
+.clock{display:flex;align-items:center;gap:8px;margin-left:auto}
+.datestamp{font-family:var(--mono);font-size:12px;color:var(--text-2);white-space:nowrap}
+.speeds{display:flex;background:var(--panel-3);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.speeds button{background:none;border:0;padding:4px 10px;font-size:11px;font-weight:600;color:var(--text-2)}
+.speeds button+button{border-left:1px solid var(--line)}
+.speeds button.on{background:var(--accent);color:#fff}
+.icon-btn{background:var(--panel-2);border:1px solid var(--line);border-radius:var(--r);
+  padding:4px 9px;font-size:12px;color:var(--text-2)}
+.icon-btn:hover{background:var(--panel-3)}
+
+/* key metric strip */
+.kpis{display:flex;gap:0;padding:0 14px 9px;flex-wrap:wrap}
+.kpi{padding:0 16px 0 0;margin-right:16px;border-right:1px solid var(--line);min-width:104px}
+.kpi:last-child{border-right:0}
+.kpi .k{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-3);font-weight:600}
+.kpi .v{font-family:var(--mono);font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
+.kpi .s{font-size:10.5px;color:var(--text-3)}
+
+/* tabs */
+nav.tabs{display:flex;gap:2px;padding:0 10px;background:var(--panel);border-bottom:1px solid var(--line);
+  flex:0 0 auto;overflow-x:auto}
+nav.tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:8px 12px;
+  font-size:12.5px;font-weight:500;color:var(--text-2);white-space:nowrap;display:flex;align-items:center;gap:6px}
+nav.tabs button:hover{color:var(--text)}
+nav.tabs button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+.pill{background:var(--bad);color:#fff;font-size:10px;font-weight:700;border-radius:99px;
+  padding:1px 6px;min-width:17px;text-align:center;font-family:var(--mono)}
+.pill.zero{background:var(--line-2);color:var(--panel)}
+
+main{flex:1 1 auto;overflow:auto;padding:14px;scrollbar-gutter:stable}
+.tabpanel{display:none;max-width:1420px;margin:0 auto}
+.tabpanel.on{display:block}
+
+/* ============ cards & grid ============ */
+.grid{display:grid;gap:12px}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media(max-width:1080px){.g3,.g4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:720px){.g2,.g3,.g4{grid-template-columns:minmax(0,1fr)}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+.card>h3{padding:9px 12px;border-bottom:1px solid var(--line);font-size:11px;text-transform:uppercase;
+  letter-spacing:.6px;color:var(--text-2);display:flex;align-items:center;justify-content:space-between;gap:8px}
+.card .body{padding:11px 12px}
+.card .body.tight{padding:6px 12px 10px}
+
+/* statement rows */
+.row{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:3px 0}
+.row .l{color:var(--text-2)}
+.row .r{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.row.total{border-top:1px solid var(--line-2);margin-top:5px;padding-top:6px;font-weight:600}
+.row.total .l{color:var(--text)}
+.row.sub .l{padding-left:12px;color:var(--text-3);font-size:12.5px}
+.row.head{font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-3);
+  font-weight:600;padding-top:9px;border-bottom:1px solid var(--line);margin-bottom:3px}
+.rule{height:1px;background:var(--line);margin:8px 0}
+
+/* gauges */
+.gauge{margin-bottom:12px}
+.gauge:last-child{margin-bottom:0}
+.gauge .gl{display:flex;justify-content:space-between;align-items:baseline;font-size:12px;margin-bottom:4px}
+.gauge .gv{font-family:var(--mono);font-weight:600}
+.track{position:relative;height:8px;background:var(--panel-3);border-radius:99px;overflow:hidden}
+.fill{position:absolute;inset:0 auto 0 0;border-radius:99px;transition:width .3s ease,background .3s}
+.gmark{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--text-3);opacity:.85}
+.gauge .gh{font-size:10.5px;color:var(--text-3);margin-top:3px}
+
+/* alerts */
+.alert{display:flex;gap:8px;align-items:flex-start;padding:7px 9px;border-radius:6px;margin-bottom:6px;
+  border:1px solid transparent;font-size:12.5px}
+.alert:last-child{margin-bottom:0}
+.alert .ic{font-weight:700;flex:0 0 auto;line-height:1.3}
+.alert.info{background:var(--accent-soft);border-color:transparent;color:var(--text)}
+.alert.ok{background:var(--good-soft);color:var(--text)}
+.alert.warn{background:var(--warn-soft);color:var(--text)}
+.alert.bad{background:var(--bad-soft);color:var(--text)}
+
+/* ============ forms ============ */
+label.field{display:block;margin-bottom:9px}
+label.field>span{display:block;font-size:11px;color:var(--text-2);margin-bottom:3px;font-weight:500}
+input[type=text],input[type=number],select{width:100%;background:var(--panel-2);border:1px solid var(--line-2);
+  border-radius:6px;padding:5px 8px;font-family:var(--mono);font-size:12.5px}
+input[type=text]{font-family:var(--sans)}
+input:focus,select:focus{outline:2px solid var(--accent);outline-offset:-1px;background:var(--panel)}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.hint{font-size:11px;color:var(--text-3);margin-top:2px}
+.btn{background:var(--panel-2);border:1px solid var(--line-2);border-radius:6px;padding:5px 11px;
+  font-size:12.5px;font-weight:500}
+.btn:hover{background:var(--panel-3)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.ok{background:var(--good);border-color:var(--good);color:#fff}
+.btn.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.btn.sm{padding:3px 8px;font-size:11.5px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.switch{display:flex;align-items:center;gap:7px;font-size:12.5px;margin-bottom:7px;cursor:pointer}
+.switch input{accent-color:var(--accent);width:15px;height:15px}
+
+/* ============ tables ============ */
+.tablewrap{overflow-x:auto}
+table.data{width:100%;border-collapse:collapse;font-size:12.5px}
+table.data th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;
+  color:var(--text-3);font-weight:600;padding:7px 9px;border-bottom:1px solid var(--line);
+  white-space:nowrap;position:sticky;top:0;background:var(--panel);z-index:1}
+table.data th.sortable{cursor:pointer;user-select:none}
+table.data th.sortable:hover{color:var(--text)}
+table.data td{padding:6px 9px;border-bottom:1px solid var(--line);white-space:nowrap}
+table.data tbody tr:hover{background:var(--panel-2)}
+table.data td.n,table.data th.n{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+table.data th.n{font-family:var(--sans)}
+.tag{display:inline-block;font-size:10px;font-weight:600;padding:1px 6px;border-radius:99px;
+  text-transform:uppercase;letter-spacing:.4px}
+.tag.cur{background:var(--good-soft);color:var(--good)}
+.tag.d30{background:var(--warn-soft);color:var(--warn)}
+.tag.d60{background:var(--warn-soft);color:var(--warn)}
+.tag.d90{background:var(--bad-soft);color:var(--bad)}
+.tag.co{background:var(--panel-3);color:var(--text-3)}
+.tag.closed{background:var(--panel-3);color:var(--text-3)}
+.tag.t{background:var(--panel-3);color:var(--text-2)}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 12px;border-bottom:1px solid var(--line)}
+.toolbar input[type=text]{width:190px}
+.toolbar select{width:auto;min-width:110px}
+.pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;padding:8px 12px;
+  font-size:12px;color:var(--text-2)}
+.empty{padding:28px 14px;text-align:center;color:var(--text-3);font-size:12.5px}
+
+/* ============ applications ============ */
+.appgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(345px,1fr));gap:12px}
+.appcard{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column}
+.appcard.urgent{border-color:var(--warn)}
+.apphead{padding:9px 11px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;
+  align-items:flex-start;gap:8px;background:var(--panel-2)}
+.apphead .who{font-weight:600;font-size:13.5px}
+.apphead .meta{font-size:11px;color:var(--text-3)}
+.apphead .prod{text-align:right}
+.apphead .prod .p{font-weight:600;font-size:12px}
+.apphead .prod .a{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+.appbody{padding:9px 11px;flex:1}
+.facts{display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;font-size:12px}
+.fact{display:flex;justify-content:space-between;gap:8px;padding:2px 0}
+.fact .fl{color:var(--text-3)}
+.fact .fv{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.appnote{margin-top:8px;padding:6px 8px;border-radius:6px;font-size:11.5px;background:var(--panel-2);
+  color:var(--text-2);border-left:2px solid var(--line-2)}
+.appnote.bad{background:var(--bad-soft);border-left-color:var(--bad)}
+.appnote.warn{background:var(--warn-soft);border-left-color:var(--warn)}
+.appnote.ok{background:var(--good-soft);border-left-color:var(--good)}
+.appacts{display:flex;gap:6px;padding:9px 11px;border-top:1px solid var(--line);background:var(--panel-2)}
+.appacts .btn{flex:1}
+.counter{padding:9px 11px;border-top:1px solid var(--line);background:var(--panel-3);display:none}
+.counter.open{display:block}
+.counter .crow{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px}
+.scorechip{font-family:var(--mono);font-weight:700;font-size:13px;padding:1px 7px;border-radius:5px}
+.tierA{background:var(--good-soft);color:var(--good)}
+.tierB{background:var(--good-soft);color:var(--good)}
+.tierC{background:var(--accent-soft);color:var(--accent)}
+.tierD{background:var(--warn-soft);color:var(--warn)}
+.tierE{background:var(--bad-soft);color:var(--bad)}
+
+/* ============ rate grid ============ */
+table.rates{width:100%;border-collapse:collapse;font-size:12px}
+table.rates th{font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--text-3);
+  font-weight:600;padding:5px 6px;text-align:center;border-bottom:1px solid var(--line)}
+table.rates th:first-child{text-align:left}
+table.rates td{padding:3px 4px;border-bottom:1px solid var(--line)}
+table.rates td:first-child{font-weight:500;white-space:nowrap;padding-left:6px}
+table.rates input{text-align:right;padding:3px 5px;font-size:12px}
+.mkt{font-size:10px;color:var(--text-3);text-align:center;font-family:var(--mono)}
+
+/* charts */
+.chartbox{position:relative;height:170px;padding:6px 4px 2px}
+.chartbox canvas{width:100%;height:100%;display:block}
+.legend{display:flex;gap:12px;flex-wrap:wrap;padding:0 12px 9px;font-size:11px;color:var(--text-2)}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+
+/* ============ modals ============ */
+.scrim{position:fixed;inset:0;background:rgba(8,12,18,.62);backdrop-filter:blur(3px);
+  display:flex;align-items:center;justify-content:center;padding:18px;z-index:50}
+.modal{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow-lg);
+  width:100%;max-width:560px;max-height:92vh;overflow:auto}
+.modal .mh{padding:16px 18px 4px}
+.modal .mh h2{font-size:19px;letter-spacing:-.3px}
+.modal .mh p{margin:6px 0 0;color:var(--text-2);font-size:12.5px}
+.modal .mb{padding:14px 18px}
+.modal .mf{padding:12px 18px 16px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.diffopts{display:grid;gap:8px;margin-top:4px}
+.diffopt{border:1px solid var(--line-2);border-radius:8px;padding:9px 11px;cursor:pointer;background:var(--panel-2)}
+.diffopt:hover{border-color:var(--accent)}
+.diffopt.sel{border-color:var(--accent);background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent)}
+.diffopt .dt{font-weight:600;font-size:13px;display:flex;justify-content:space-between;gap:8px}
+.diffopt .dd{font-size:11.5px;color:var(--text-2);margin-top:3px}
+.diffopt .dn{font-family:var(--mono);font-size:11px;color:var(--text-3);margin-top:4px}
+.gostats{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:10px}
+.gostat{background:var(--panel-2);padding:9px 11px}
+.gostat .k{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-3);font-weight:600}
+.gostat .v{font-family:var(--mono);font-size:15px;font-weight:600;margin-top:1px}
+.cause{background:var(--bad-soft);border:1px solid var(--bad);border-radius:8px;padding:10px 12px;margin-top:10px}
+.cause .ct{font-weight:700;color:var(--bad);font-size:13px}
+.cause .cd{font-size:12.5px;color:var(--text-2);margin-top:3px}
+
+/* toasts */
+#toasts{position:fixed;right:14px;bottom:14px;display:flex;flex-direction:column;gap:7px;z-index:60;
+  max-width:340px;pointer-events:none}
+.toast{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:7px;box-shadow:var(--shadow-lg);padding:8px 11px;font-size:12.5px;
+  animation:slidein .22s ease;pointer-events:auto}
+.toast.warn{border-left-color:var(--warn)} .toast.bad{border-left-color:var(--bad)}
+.toast.ok{border-left-color:var(--good)}
+.toast .tt{font-weight:600;margin-bottom:1px}
+.toast .td{color:var(--text-2);font-size:11.5px}
+@keyframes slidein{from{opacity:0;transform:translateX(14px)}to{opacity:1;transform:none}}
+
+/* run banner */
+.runbanner{background:var(--bad);color:#fff;padding:8px 14px;display:flex;align-items:center;
+  gap:12px;flex-wrap:wrap;font-size:12.5px}
+.runbanner b{font-size:13px}
+.runbanner .btn{background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.4);color:#fff}
+.restrict{background:var(--warn);color:#1b1408;padding:6px 14px;font-size:12.5px;font-weight:500}
+.ledgerbar{background:var(--bad);color:#fff;padding:4px 14px;font-size:11px;font-family:var(--mono)}
+.log{max-height:230px;overflow:auto;font-size:12px}
+.logline{padding:4px 12px;border-bottom:1px solid var(--line);display:flex;gap:9px}
+.logline .lt{font-family:var(--mono);color:var(--text-3);flex:0 0 auto;font-size:11px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header class="topbar">
+    <div class="topbar-row">
+      <div class="brand">
+        <span class="mark">RESERVE</span>
+        <span class="bank-name" id="hdrBankName">—</span>
+        <span class="tier-badge" id="hdrTier">de novo</span>
+      </div>
+      <div class="clock">
+        <span class="datestamp" id="hdrDate">—</span>
+        <div class="speeds" id="speedCtl">
+          <button data-speed="0" title="Pause">❚❚</button>
+          <button data-speed="1" class="on">1&times;</button>
+          <button data-speed="4">4&times;</button>
+          <button data-speed="15">15&times;</button>
+        </div>
+        <button class="icon-btn" id="themeBtn" title="Toggle theme">◐</button>
+      </div>
+    </div>
+    <div class="kpis" id="kpiStrip">
+      <div class="kpi"><div class="k">Total assets</div><div class="v" id="kpiAssets">—</div><div class="s" id="kpiAssetsSub">&nbsp;</div></div>
+      <div class="kpi"><div class="k">Cash</div><div class="v" id="kpiCash">—</div><div class="s" id="kpiCashSub">&nbsp;</div></div>
+      <div class="kpi"><div class="k">Deposits</div><div class="v" id="kpiDeposits">—</div><div class="s" id="kpiDepositsSub">&nbsp;</div></div>
+      <div class="kpi"><div class="k">Net loans</div><div class="v" id="kpiLoans">—</div><div class="s" id="kpiLoansSub">&nbsp;</div></div>
+      <div class="kpi"><div class="k">Equity</div><div class="v" id="kpiEquity">—</div><div class="s" id="kpiEquitySub">&nbsp;</div></div>
+      <div class="kpi"><div class="k">Reserve ratio</div><div class="v" id="kpiRR">—</div><div class="s" id="kpiRRSub">&nbsp;</div></div>
+      <div class="kpi"><div class="k">Capital ratio</div><div class="v" id="kpiCAR">—</div><div class="s" id="kpiCARSub">&nbsp;</div></div>
+      <div class="kpi"><div class="k">Net income (MTD)</div><div class="v" id="kpiNI">—</div><div class="s" id="kpiNISub">&nbsp;</div></div>
+    </div>
+    <div id="ledgerBar" class="ledgerbar hidden"></div>
+    <div id="restrictBar" class="restrict hidden"></div>
+    <div id="runBanner" class="runbanner hidden"></div>
+  </header>
+
+  <nav class="tabs" id="tabNav">
+    <button data-tab="overview" class="on">Overview</button>
+    <button data-tab="applications">Applications <span class="pill zero" id="tabAppCount">0</span></button>
+    <button data-tab="portfolio">Portfolio</button>
+    <button data-tab="rates">Rates &amp; Policy</button>
+    <button data-tab="marketing">Marketing</button>
+    <button data-tab="financials">Financials</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+
+  <main id="main">
+
+    <!-- ============ OVERVIEW ============ -->
+    <section class="tabpanel on" data-panel="overview">
+      <div class="grid g4" style="margin-bottom:12px">
+        <div class="card">
+          <h3>Balance sheet</h3>
+          <div class="body tight" id="ovBS"></div>
+        </div>
+        <div class="card">
+          <h3>Capital &amp; liquidity</h3>
+          <div class="body" id="ovGauges"></div>
+        </div>
+        <div class="card">
+          <h3><span>Income statement</span><span class="dim" id="ovISPeriod"></span></h3>
+          <div class="body tight" id="ovIS"></div>
+        </div>
+        <div class="card">
+          <h3>Franchise</h3>
+          <div class="body" id="ovFranchise"></div>
+        </div>
+      </div>
+      <div class="grid g3">
+        <div class="card">
+          <h3>Alerts</h3>
+          <div class="body" id="ovAlerts"></div>
+        </div>
+        <div class="card">
+          <h3>Portfolio health</h3>
+          <div class="body tight" id="ovHealth"></div>
+        </div>
+        <div class="card">
+          <h3>Activity</h3>
+          <div class="log" id="ovLog"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ APPLICATIONS ============ -->
+    <section class="tabpanel" data-panel="applications">
+      <div class="card" style="margin-bottom:12px">
+        <div class="toolbar">
+          <strong style="font-size:12.5px">Manual review queue</strong>
+          <select id="appFilterProduct">
+            <option value="">All products</option>
+            <option value="card">Credit card</option>
+            <option value="personal">Personal loan</option>
+            <option value="auto">Auto loan</option>
+            <option value="mortgage">Mortgage</option>
+            <option value="deposit">Deposit (KYC)</option>
+          </select>
+          <select id="appSort">
+            <option value="age">Oldest first</option>
+            <option value="score">Highest score</option>
+            <option value="amount">Largest amount</option>
+            <option value="risk">Lowest expected loss</option>
+          </select>
+          <span style="margin-left:auto" class="dim" id="appQueueInfo"></span>
+          <button class="btn sm" id="appDenyAll">Deny all</button>
+        </div>
+        <div class="body" id="appList"></div>
+      </div>
+      <div class="card">
+        <h3>Recent decisions</h3>
+        <div class="log" id="appDecisions"></div>
+      </div>
+    </section>
+
+    <!-- ============ PORTFOLIO ============ -->
+    <section class="tabpanel" data-panel="portfolio">
+      <div class="grid g4" style="margin-bottom:12px" id="pfSummary"></div>
+      <div class="card">
+        <div class="toolbar">
+          <input type="text" id="pfSearch" placeholder="Search customer…">
+          <select id="pfType">
+            <option value="credit">Credit accounts</option>
+            <option value="deposit">Deposit accounts</option>
+          </select>
+          <select id="pfProduct"><option value="">All products</option></select>
+          <select id="pfStatus"></select>
+          <span style="margin-left:auto" class="dim" id="pfCount"></span>
+        </div>
+        <div class="tablewrap"><table class="data" id="pfTable"><thead id="pfHead"></thead><tbody id="pfBody"></tbody></table></div>
+        <div class="pager" id="pfPager"></div>
+      </div>
+    </section>
+
+    <!-- ============ RATES & POLICY ============ -->
+    <section class="tabpanel" data-panel="rates">
+      <div class="grid g2" style="margin-bottom:12px">
+        <div class="card">
+          <h3><span>Deposit rate sheet (APY)</span><span class="dim" id="rsMktDep"></span></h3>
+          <div class="body" id="rsDeposits"></div>
+        </div>
+        <div class="card">
+          <h3>Fee schedule</h3>
+          <div class="body" id="rsFees"></div>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:12px">
+        <h3><span>Loan &amp; card rate sheet (APR by credit tier)</span><span class="dim" id="rsMktLoan"></span></h3>
+        <div class="body"><div class="tablewrap"><table class="rates" id="rsGrid"></table></div>
+          <div class="hint" style="margin-top:7px">Grey figures are the prevailing market APR. Pricing above market lowers offer take-up and erodes reputation; pricing below market wins volume but thins the spread.</div>
+        </div>
+      </div>
+      <div class="grid g2">
+        <div class="card">
+          <h3>Underwriting policy</h3>
+          <div class="body" id="rsPolicy"></div>
+        </div>
+        <div class="card">
+          <h3>Product limits &amp; treasury</h3>
+          <div class="body" id="rsTreasury"></div>
+        </div>
+        <div class="card">
+          <h3>Internal risk limits</h3>
+          <div class="body" id="rsLimits"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ MARKETING ============ -->
+    <section class="tabpanel" data-panel="marketing">
+      <div class="grid g2" style="margin-bottom:12px">
+        <div class="card">
+          <h3>Marketing budget</h3>
+          <div class="body" id="mkBudget"></div>
+        </div>
+        <div class="card">
+          <h3>Pipeline &amp; reputation</h3>
+          <div class="body" id="mkPipeline"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Reputation drivers</h3>
+        <div class="body" id="mkRep"></div>
+      </div>
+    </section>
+
+    <!-- ============ FINANCIALS ============ -->
+    <section class="tabpanel" data-panel="financials">
+      <div class="grid g2" style="margin-bottom:12px">
+        <div class="card">
+          <h3><span>Balance sheet</span><span class="dim" id="finBSDate"></span></h3>
+          <div class="body tight" id="finBS"></div>
+        </div>
+        <div class="card">
+          <h3><span>Income statement</span>
+            <select id="finISPeriod" style="width:auto;font-size:11px;padding:2px 6px">
+              <option value="mtd">Month to date</option>
+              <option value="last">Last month</option>
+              <option value="ytd">Year to date</option>
+              <option value="life">Lifetime</option>
+            </select>
+          </h3>
+          <div class="body tight" id="finIS"></div>
+        </div>
+      </div>
+      <div class="grid g2">
+        <div class="card"><h3>Net income by month</h3><div class="chartbox"><canvas id="chNI"></canvas></div><div class="legend" id="lgNI"></div></div>
+        <div class="card"><h3>Regulatory ratios</h3><div class="chartbox"><canvas id="chRatios"></canvas></div><div class="legend" id="lgRatios"></div></div>
+        <div class="card"><h3>Deposits vs. loans</h3><div class="chartbox"><canvas id="chBal"></canvas></div><div class="legend" id="lgBal"></div></div>
+        <div class="card"><h3>Credit &amp; macro</h3><div class="chartbox"><canvas id="chCredit"></canvas></div><div class="legend" id="lgCredit"></div></div>
+      </div>
+    </section>
+
+    <!-- ============ SETTINGS ============ -->
+    <section class="tabpanel" data-panel="settings">
+      <div class="grid g2">
+        <div class="card">
+          <h3>Simulation</h3>
+          <div class="body" id="setSim"></div>
+        </div>
+        <div class="card">
+          <h3>Save data</h3>
+          <div class="body" id="setSave"></div>
+        </div>
+        <div class="card">
+          <h3>Reference: model assumptions</h3>
+          <div class="body" id="setRef"></div>
+        </div>
+        <div class="card">
+          <h3>Developer</h3>
+          <div class="body" id="setDev"></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div id="toasts"></div>
+<div id="modalRoot"></div>
+<script>
+"use strict";
+/* =========================================================================
+   RESERVE — a bank operator simulation
+   Single-file, no build step, no backend.
+
+   Architecture notes
+   ------------------
+   * `S` is the entire game state and is the only thing serialised to
+     localStorage. Everything else is derived on demand.
+   * All balance-sheet movement goes through `post()`, which is double-entry:
+     it refuses to let Assets - Liabilities - Equity drift from zero and
+     records any violation for the developer panel.
+   * The simulation advances in whole days (`stepDay`) with a monthly
+     close-out (`monthClose`). Rendering is decoupled: the sim marks dirty
+     flags, and a throttled render loop repaints only the visible tab.
+   ========================================================================= */
+
+/* ============================ configuration ============================ */
+const CFG = {
+  SEC_PER_DAY: 2.5,          // real seconds per simulated day at 1x
+  DAYS_PER_MONTH: 30,
+  MONTHS_PER_YEAR: 12,
+  REQ_RESERVE: 0.10,         // cash / deposits floor
+  REQ_CAPITAL: 0.08,         // equity / risk-weighted assets floor
+  TAX_RATE: 0.21,
+
+  // risk weights for the capital ratio
+  RW: { cash:0, securities:0.20, mortgage:0.50, auto:0.50, personal:1.00, card:1.00 },
+  CCF_CARD: 0.50,            // credit-conversion factor on undrawn card lines
+  CARD_CASH_DRAW: 0.25,      // liquidity assumed drawn at card origination
+
+  // loss given default
+  LGD: { mortgage:0.25, auto:0.45, personal:0.85, card:0.90 },
+
+  // annualised probability of default by credit tier (base case)
+  PD: { A:0.003, B:0.008, C:0.020, D:0.060, E:0.150 },
+  PD_PRODUCT: { mortgage:0.55, auto:0.80, personal:1.15, card:1.30 },
+  MACRO_PD: { recession:2.5, normal:1.0, boom:0.6 },
+  CURE: { secured:0.34, unsecured:0.26 },   // monthly probability a delinquent account cures
+  CHARGEOFF_AT: 4,           // missed payments before charge-off (120 DPD)
+
+  // operating cost model
+  OPEX_BASE: 8000,           // fixed monthly overhead
+  OPEX_ASSET_BPS: 0.0006,    // monthly, on total assets (~72bp / yr)
+  OPEX_DEP_ACCT: 2.5,        // monthly servicing cost per deposit account
+  OPEX_CREDIT_ACCT: 6.0,     // monthly servicing cost per credit account
+
+  // pipeline
+  ARRIVE_BASE: 2.6,          // applicants/day at reputation 50, no marketing, de novo scale
+  QUEUE_CAP: 60,
+  APP_TTL: 14,               // days before an unreviewed application walks away
+  MIX: { deposit:0.44, card:0.22, personal:0.14, auto:0.13, mortgage:0.07 },
+
+  // deposits
+  KYC_THRESHOLD: 250000,     // deposits above this get a compliance review
+  DEP_KIND: { checking:0.45, savings:0.40, cd:0.15 },
+  CD_TERM: 12,               // months
+  DEP_BETA: 0.55,            // how strongly depositors react to rate gaps
+
+  // bank run
+  RUN_BREACH_DAYS: 15,
+  RUN_INTENSITY: 0.035,      // share of runnable deposits withdrawn per day
+  RUN_MIN_DAYS: 10, RUN_MAX_DAYS: 20,
+  SECURITIES_HAIRCUT: 0.005, // cost of a fire sale
+
+  MAX_HISTORY: 720, MAX_LOG: 120, MAX_DECISIONS: 60,
+  PRUNE_AFTER_DAYS: 180,     // dead accounts older than this are dropped entirely
+  SAVE_BUDGET: 4000000,      // bytes; past this the save sheds closed accounts
+};
+
+const TIERS = ["A","B","C","D","E"];
+const TIER_MIN = { A:800, B:740, C:670, D:580, E:300 };
+const TIER_LABEL = { A:"800+", B:"740–799", C:"670–739", D:"580–669", E:"below 580" };
+const TIER_NAME = { A:"Super-prime", B:"Prime", C:"Near-prime", D:"Subprime", E:"Deep subprime" };
+const PRODUCTS = ["card","personal","auto","mortgage"];
+const PRODUCT_LABEL = { card:"Credit card", personal:"Personal loan", auto:"Auto loan",
+                        mortgage:"Mortgage", deposit:"Deposit account" };
+const SECURED = { mortgage:true, auto:true, personal:false, card:false };
+const TERMS = { personal:[24,36,48,60], auto:[48,60,72], mortgage:[360] };
+
+// spread over the market policy rate used to derive the prevailing market APR
+const MKT_SPREAD = {
+  card:     { A:8.0, B:10.0, C:13.0, D:17.0, E:21.0 },
+  personal: { A:3.0, B:5.0,  C:8.0,  D:13.0, E:18.0 },
+  auto:     { A:1.0, B:2.0,  C:4.0,  D:7.0,  E:11.0 },
+  mortgage: { A:0.8, B:1.2,  C:2.0,  D:3.5,  E:5.5  },
+};
+const DEP_MKT_MULT = { checking:0.08, savings:0.55, cd:0.80 };  // of the market policy rate
+
+const DIFFICULTIES = {
+  denovo:      { key:"denovo", name:"De novo (tight)", capital:2_000_000, deposits:1_000_000,
+                 rep:50, note:"Newly chartered. Capital is thin and the deposit base is tiny — you have to fund growth before you can lend it." },
+  comfortable: { key:"comfortable", name:"Comfortable", capital:5_000_000, deposits:10_000_000,
+                 rep:58, note:"An established community bank. Room to underwrite from day one; the ratios only bite once you have grown into them." },
+  hard:        { key:"hard", name:"Undercapitalised (hard)", capital:1_200_000, deposits:500_000,
+                 rep:38, note:"A troubled charter handed to you. Reputation is poor, capital is short, and the regulator is already watching." },
+};
+
+const SIZE_TIERS = [
+  [10e6, "de novo"], [100e6, "community"], [1e9, "regional"],
+  [10e9, "super-regional"], [Infinity, "money-center"],
+];
+
+/* ============================== utilities ============================== */
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0;
+  let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t;
+  return ((t^t>>>14)>>>0)/4294967296; }; }
+let _rand = mulberry32(1);
+function rnd(){ S.rngState = (S.rngState + 0x9E3779B9) | 0; _rand = mulberry32(S.rngState); return _rand(); }
+function rrange(a,b){ return a + (b-a)*rnd(); }
+function rint(a,b){ return Math.floor(a + (b-a+1)*rnd()); }
+function pick(arr){ return arr[Math.floor(rnd()*arr.length)]; }
+function randn(){ let u=0,v=0; while(!u) u=rnd(); while(!v) v=rnd();
+  return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); }
+function weighted(obj){ let t=0; for(const k in obj) t+=obj[k];
+  let r=rnd()*t; for(const k in obj){ r-=obj[k]; if(r<=0) return k; } return Object.keys(obj)[0]; }
+function clamp(x,lo,hi){ return x<lo?lo:x>hi?hi:x; }
+function round2(x){ return Math.round(x*100)/100; }
+
+function fmtMoney(n, dp){
+  if(!isFinite(n)) return "—";
+  const neg = n<0; n = Math.abs(n);
+  const s = n.toLocaleString("en-US",{minimumFractionDigits:dp==null?0:dp,
+                                     maximumFractionDigits:dp==null?0:dp});
+  return (neg?"-$":"$")+s;
+}
+function fmtCompact(n){
+  if(!isFinite(n)) return "—";
+  const neg=n<0; n=Math.abs(n); let s;
+  if(n>=1e9) s=(n/1e9).toFixed(2)+"B";
+  else if(n>=1e6) s=(n/1e6).toFixed(2)+"M";
+  else if(n>=1e4) s=(n/1e3).toFixed(1)+"k";
+  else s=Math.round(n).toLocaleString("en-US");
+  return (neg?"-$":"$")+s;
+}
+function pct(x, dp){ return (isFinite(x)? (x*100).toFixed(dp==null?1:dp) : "—")+"%"; }
+function rate(x, dp){ return (isFinite(x)? x.toFixed(dp==null?2:dp) : "—")+"%"; }
+function sign(n){ return n>0?"good":n<0?"bad":""; }
+
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function dateParts(day){
+  const y = Math.floor(day/(CFG.DAYS_PER_MONTH*CFG.MONTHS_PER_YEAR));
+  const rem = day - y*CFG.DAYS_PER_MONTH*CFG.MONTHS_PER_YEAR;
+  const m = Math.floor(rem/CFG.DAYS_PER_MONTH);
+  return { y, m, d: (rem % CFG.DAYS_PER_MONTH) + 1 };
+}
+function fmtDate(day){
+  if(day < 0) return "pre-charter";
+  const p = dateParts(day);
+  return `${MONTHS[p.m]} ${p.d}, Yr ${p.y+1}`;
+}
+function fmtMonth(day){ const p=dateParts(day); return `${MONTHS[p.m]} Yr${p.y+1}`; }
+
+function tierOf(score){ return score>=800?"A":score>=740?"B":score>=670?"C":score>=580?"D":"E"; }
+function pmtOf(P, aprPct, n){
+  const i = aprPct/1200;
+  if(i<=0) return P/n;
+  return P*i/(1-Math.pow(1+i,-n));
+}
+const FIRST = ["Marcus","Elena","Priya","Devon","Sofia","Nathan","Amara","Hugo","Lena","Tomas",
+  "Grace","Ibrahim","Yuki","Caleb","Nadia","Owen","Camila","Felix","Rosa","Jonah","Aisha","Theo",
+  "Mira","Andre","Bianca","Kwame","Ingrid","Rafael","Noor","Silas","Delia","Emeka","Hana","Victor",
+  "Paloma","Dmitri","Fiona","Omar","Suki","Bennett","Clara","Malik","Anya","Griffin","Josie","Reza",
+  "Wanda","Cyrus","Lucia","Bo","Tessa","Arun","Freya","Mateo","Zainab","Colin","Petra","Kofi"];
+const LAST = ["Alvarez","Brennan","Cho","Dawson","Eriksen","Fontaine","Gallagher","Haddad","Ionescu",
+  "Jarvis","Kowalski","Lindqvist","Marchetti","Nakamura","Okonkwo","Petrov","Quintero","Rasmussen",
+  "Sandoval","Tanaka","Ubaldo","Vance","Whitfield","Xiong","Yarrow","Zeleny","Bhatt","Caldwell",
+  "Duarte","Ellsworth","Ferrara","Gutierrez","Hollis","Iqbal","Jensen","Kaur","Larkin","Mbeki",
+  "Novak","Oyelaran","Prasad","Reyes","Sorensen","Thibault","Ventura","Wexler","Ziegler","Amari",
+  "Barlowe","Castellanos","Devlin","Farrow","Halvorsen","Ives","Kirkland","Mensah","Ridley","Solis"];
+function randomName(){ return pick(FIRST)+" "+pick(LAST); }
+
+/* ========================= state & double-entry ========================= */
+let S = null;
+let LEDGER_ERRORS = [];
+
+const IS_LINES = ["intLoans","intSec","intDep","provision","feeOrig","feeLate","feeAnnual",
+                  "feeInterchange","feeService","opex","marketing","tax"];
+function blankIS(){ const o={}; for(const k of IS_LINES) o[k]=0; return o; }
+function netIncomeOf(is){
+  return is.intLoans + is.intSec - is.intDep - is.provision
+       + is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService
+       - is.opex - is.marketing - is.tax;
+}
+function preTaxOf(is){ return netIncomeOf(is) + is.tax; }
+
+function defaultRates(marketRate){
+  const dep = {}; for(const k in DEP_MKT_MULT) dep[k] = round2(marketRate*DEP_MKT_MULT[k]);
+  const loan = {};
+  for(const p of PRODUCTS){ loan[p]={}; for(const t of TIERS) loan[p][t] = round2(marketRate + MKT_SPREAD[p][t]); }
+  return { dep, loan };
+}
+
+function newGame(bankName, diffKey){
+  const diff = DIFFICULTIES[diffKey] || DIFFICULTIES.denovo;
+  const seed = (Math.random()*4294967296)>>>0;
+  const marketRate = 4.25;
+  S = {
+    v: 1,
+    bankName: bankName || "Reserve Trust",
+    difficulty: diff.key,
+    rngState: seed|0,
+    day: 0,
+    dayAcc: 0,
+    speed: 1,
+    over: null,
+    nextId: 1,
+
+    // general ledger
+    gl: { cash: diff.capital + diff.deposits, securities: 0, grossLoans: 0,
+          allowance: 0, deposits: diff.deposits, paidIn: diff.capital, retained: 0 },
+
+    loans: [], depAccts: [], apps: [],
+    rates: defaultRates(marketRate),
+    fees: { origPct: 1.0, lateFee: 35, cardAnnual: 0, depMonthly: 0 },
+    policy: {
+      minScore: 620, maxDTI: 0.43,
+      autoApprove: 740, autoDecline: 640,
+      products: { card:true, personal:true, auto:true, mortgage:true },
+      targetReserve: 0.16, targetCapital: 0.11,   // internal limits, above the regulatory floors
+      maxAmount: { card:25000, personal:40000, auto:60000, mortgage:500000 },
+      sweep: false, sweepBuffer: 0.18,
+      apyEmergency: 0,
+    },
+    marketing: { budget: 0, mix: { brand:1, deposit:1, lending:1 } },
+    macro: { rate: marketRate, econ: "normal", econMonths: 0 },
+    rep: diff.rep,
+
+    is: { mtd: blankIS(), last: blankIS(), ytd: blankIS(), life: blankIS() },
+    history: [],
+    reg: { capStrikes: 0, resStrikes: 0, restricted: false, breachDays: 0 },
+    run: { active:false, daysLeft:0, intensity:0, count:0 },
+    stats: { customersServed:0, appsReceived:0, appsApproved:0, appsDeclined:0,
+             appsExpired:0, offersDeclined:0, chargeOffs:0, chargeOffAmt:0,
+             peakAssets:0, peakEquity:0, lifetimeInterest:0, monthApproved:0, monthDecided:0 },
+    log: [], decisions: [],
+  };
+  LEDGER_ERRORS = [];
+  seedDeposits(diff.deposits);
+  logEvent("Charter granted. " + fmtMoney(diff.capital) + " of paid-in capital on deposit at the Fed.", "ok");
+  bumpAll();
+  return S;
+}
+
+// Split the opening deposit base into plausible individual accounts so the
+// portfolio and the run mechanics have something real to work with.
+function seedDeposits(total){
+  let remaining = total; let guard = 0;
+  while(remaining > 500 && guard++ < 4000){
+    const kind = weighted(CFG.DEP_KIND);
+    let amt = Math.min(remaining, Math.exp(8.4 + 1.1*randn()));
+    if(remaining - amt < 500) amt = remaining;
+    amt = Math.max(250, Math.round(amt));
+    remaining -= amt;
+    S.depAccts.push(makeDepositAccount(randomName(), kind, amt, true));
+  }
+  // seeding must not disturb the ledger: gl.deposits already holds the total
+  const sum = S.depAccts.reduce((a,x)=>a+x.balance,0);
+  const drift = S.gl.deposits - sum;
+  if(Math.abs(drift) > 0.005 && S.depAccts.length) S.depAccts[0].balance += drift;
+}
+
+function makeDepositAccount(name, kind, balance, seeded){
+  return {
+    id: S.nextId++, name, kind, balance,
+    apy: kind==="cd" ? S.rates.dep.cd : null,     // CDs lock their rate at origination
+    maturity: kind==="cd" ? S.day + CFG.CD_TERM*CFG.DAYS_PER_MONTH : null,
+    opened: S.day - (seeded ? rint(0, 400) : 0),
+    status: "open",
+    beta: clamp(0.35 + 0.5*rnd(), 0.2, 0.95),      // rate sensitivity
+    drift: 0.004*randn() + (kind==="checking" ? 0.001 : 0.004), // organic monthly growth
+  };
+}
+
+/* --- the one place the balance sheet is allowed to move ----------------- */
+function post(d, tag){
+  const dA = (d.cash||0) + (d.securities||0) + (d.grossLoans||0) - (d.allowance||0);
+  const dL = (d.deposits||0);
+  const dE = (d.paidIn||0) + (d.retained||0);
+  const drift = dA - dL - dE;
+  if(Math.abs(drift) > 1e-6){
+    LEDGER_ERRORS.push({ day:S.day, tag:tag||"?", drift, entry:JSON.parse(JSON.stringify(d)) });
+    if(LEDGER_ERRORS.length > 40) LEDGER_ERRORS.shift();
+  }
+  const g = S.gl;
+  for(const k in d) g[k] += d[k];
+  _mv++;
+}
+// Book a P&L line and its balance-sheet counterpart together.
+function acc(line, amt){
+  S.is.mtd[line]+=amt; S.is.ytd[line]+=amt; S.is.life[line]+=amt;
+}
+function income(line, amt, d, tag){ acc(line, amt); post(d, tag||line); }
+
+/* --------------------------- derived metrics --------------------------- */
+let _mv = 0, _mCacheV = -1, _mCache = null;
+function M(){
+  if(_mCacheV === _mv && _mCache) return _mCache;
+  const g = S.gl;
+  let rwaCredit = 0, cardUndrawn = 0, gross = 0, delinq = 0, npl = 0, active = 0;
+  const byProd = { card:0, personal:0, auto:0, mortgage:0 };
+  let expLoss = 0;
+  for(let i=0;i<S.loans.length;i++){
+    const a = S.loans[i];
+    if(a.status==="chargedoff" || a.status==="closed") continue;
+    active++;
+    gross += a.balance;
+    byProd[a.product] += a.balance;
+    rwaCredit += a.balance * CFG.RW[a.product];
+    if(a.product==="card"){
+      const und = Math.max(0, a.limit - a.balance);
+      cardUndrawn += und;
+      rwaCredit += und * CFG.CCF_CARD * CFG.RW.card;
+    }
+    if(a.missed>0){ delinq += a.balance; if(a.missed>=3) npl += a.balance; }
+    expLoss += a.balance * pdAnnual(a) * CFG.LGD[a.product];
+  }
+  const rwa = rwaCredit + g.securities*CFG.RW.securities;
+  const assets = g.cash + g.securities + g.grossLoans - g.allowance;
+  const liabilities = g.deposits;
+  const equity = g.paidIn + g.retained;
+  _mCache = {
+    assets, liabilities, equity, rwa, rwaCredit,
+    cash: g.cash, securities: g.securities, grossLoans: g.grossLoans,
+    allowance: g.allowance, netLoans: g.grossLoans - g.allowance, deposits: g.deposits,
+    rr: g.deposits>0 ? g.cash/g.deposits : Infinity,
+    car: rwa>0 ? equity/rwa : Infinity,
+    identityDrift: assets - liabilities - equity,
+    activeLoans: active, gross, byProd, cardUndrawn,
+    delinqAmt: delinq, nplAmt: npl,
+    delinqRate: gross>0 ? delinq/gross : 0,
+    nplRate: gross>0 ? npl/gross : 0,
+    requiredAllowance: expLoss,
+    coverage: gross>0 ? g.allowance/gross : 0,
+    depAccts: S.depAccts.length ? S.depAccts.filter(d=>d.status==="open").length : 0,
+    ldr: g.deposits>0 ? g.grossLoans/g.deposits : 0,
+  };
+  _mCacheV = _mv;
+  return _mCache;
+}
+function pdAnnual(a){
+  const base = CFG.PD[a.tier] * CFG.PD_PRODUCT[a.product] * CFG.MACRO_PD[S.macro.econ];
+  const dtiAdj = 1 + Math.max(0, (a.dti||0) - 0.36)*2.5;
+  // seasoning: fresh paper defaults a little less than paper 12-30 months old
+  const ageM = (S.day - a.opened)/CFG.DAYS_PER_MONTH;
+  const season = ageM < 4 ? 0.55 + 0.11*ageM : ageM > 48 ? 0.75 : 1.0;
+  return clamp(base*dtiAdj*season, 0.0005, 0.85);
+}
+function sizeTier(assets){ for(const [cap,label] of SIZE_TIERS) if(assets<cap) return label; return "money-center"; }
+function marketDepAPY(kind){ return S.macro.rate * DEP_MKT_MULT[kind]; }
+function marketAPR(product, tier){ return S.macro.rate + MKT_SPREAD[product][tier]; }
+
+function logEvent(text, kind){
+  S.log.unshift({ day:S.day, text, kind:kind||"info" });
+  if(S.log.length > CFG.MAX_LOG) S.log.pop();
+  DIRTY.overview = true;
+}
+function logDecision(text, kind){
+  S.decisions.unshift({ day:S.day, text, kind:kind||"info" });
+  if(S.decisions.length > CFG.MAX_DECISIONS) S.decisions.pop();
+  DIRTY.apps = true;
+}
+
+/* ===================== pipeline, applicants, underwriting ===================== */
+const DIRTY = { kpi:true, overview:true, apps:true, portfolio:true, rates:true,
+                marketing:true, financials:true, settings:true };
+// id of the application whose counter-offer form is open; the sim holds that
+// file open instead of letting it expire under the player's cursor
+let counterOpen = null;
+function bumpAll(){ for(const k in DIRTY) DIRTY[k]=true; }
+
+function marketingFactor(){
+  const b = S.marketing.budget;
+  const strength = Math.min(1, b/15000);
+  const mx = S.marketing.mix;
+  const tot = mx.brand + mx.deposit + mx.lending || 1;
+  const f = k => 1 + ((3*mx[k]/tot) - 1)*strength;
+  return { spendMult: 1 + 0.75*Math.log(1 + b/9000), brand:f("brand"),
+           deposit:f("deposit"), lending:f("lending"), strength };
+}
+function arrivalRate(){
+  const m = M(), mf = marketingFactor();
+  const repF = clamp(0.25 + S.rep/67, 0.18, 2.2);
+  const scale = Math.pow(Math.max(1, m.assets/3e6), 0.32);
+  const econF = S.macro.econ==="boom" ? 1.15 : S.macro.econ==="recession" ? 0.82 : 1;
+  const restrictF = S.reg.restricted ? 0.7 : 1;
+  const runF = S.run.active ? 0.35 : 1;
+  const brandF = clamp(1 + 0.22*(mf.brand-1), 0.75, 1.35);
+  return CFG.ARRIVE_BASE * repF * mf.spendMult * scale * econF * restrictF * runF * brandF;
+}
+function poisson(lambda){
+  if(lambda <= 0) return 0;
+  if(lambda > 24) return Math.max(0, Math.round(lambda + Math.sqrt(lambda)*randn()));
+  const L = Math.exp(-lambda); let k=0, p=1;
+  do { k++; p *= rnd(); } while(p > L);
+  return k-1;
+}
+function productMix(){
+  const mf = marketingFactor();
+  const mix = {};
+  mix.deposit = CFG.MIX.deposit * (0.5 + 0.5*mf.deposit);
+  for(const p of PRODUCTS) mix[p] = CFG.MIX[p] * (0.5 + 0.5*mf.lending) * (S.policy.products[p] ? 1 : 0.25);
+  return mix;
+}
+
+function makeApplicant(){
+  const score = clamp(Math.round(680 + 90*randn()), 300, 850);
+  const z = (score - 680)/90;
+  const income = Math.round(Math.exp(8.35 + 0.45*randn() + 0.22*z));
+  const debtRatio = clamp(0.06 + 0.20*rnd() - 0.085*z + 0.05*randn(), 0, 0.60);
+  const age = clamp(Math.round(24 + Math.abs(randn())*13 + rnd()*8), 21, 76);
+  return { name: randomName(), age, income, score, tier: tierOf(score),
+           debtPmt: Math.round(debtRatio*income), existingDTI: debtRatio };
+}
+
+function requestedAmount(c, product){
+  const sf = clamp(0.45 + (c.score-500)/380, 0.2, 1.35);
+  switch(product){
+    case "card":     return clamp(Math.round(c.income*(1.4+2.6*rnd())*sf/100)*100, 500, 40000);
+    case "personal": return clamp(Math.round(c.income*(2+8*rnd())*sf/100)*100, 2000, 60000);
+    case "auto":     return clamp(Math.round(c.income*(3+9*rnd())*sf/100)*100, 6000, 90000);
+    case "mortgage": return clamp(Math.round(c.income*(28+46*rnd())*sf/1000)*1000, 90000, 900000);
+  }
+  return 0;
+}
+
+function makeApplication(){
+  const c = makeApplicant();
+  const product = weighted(productMix());
+  const app = { id: S.nextId++, day: S.day, expires: S.day + CFG.APP_TTL, product,
+                name:c.name, age:c.age, income:c.income, score:c.score, tier:c.tier,
+                debtPmt:c.debtPmt, existingDTI:c.existingDTI };
+  if(product === "deposit"){
+    app.kind = weighted(CFG.DEP_KIND);
+    app.requested = Math.max(250, Math.round(Math.exp(8.4 + 1.15*randn()) * (0.7 + 0.8*rnd())));
+    app.amount = app.requested;
+    app.apy = effectiveDepAPY(app.kind);
+    return app;
+  }
+  app.requested = requestedAmount(c, product);
+  app.amount = Math.min(app.requested, S.policy.maxAmount[product]);
+  app.term = product === "card" ? 0 : pick(TERMS[product]);
+  app.apr = S.rates.loan[product][c.tier];
+  app.payment = monthlyObligation(product, app.amount, app.apr, app.term);
+  app.dti = (c.debtPmt + app.payment)/c.income;
+  return app;
+}
+function monthlyObligation(product, amount, apr, term){
+  return product === "card" ? Math.round(amount*0.03) : Math.round(pmtOf(amount, apr, term));
+}
+function effectiveDepAPY(kind){ return S.rates.dep[kind] + S.policy.apyEmergency; }
+
+/* ------------------------------ capacity ------------------------------ */
+// `floors` = true means test only the hard regulatory minimums (a deliberate
+// player override); the default tests the bank's own, tighter internal limits.
+function limits(floors){
+  return floors
+    ? { rr:CFG.REQ_RESERVE, car:CFG.REQ_CAPITAL }
+    : { rr:Math.max(CFG.REQ_RESERVE, S.policy.targetReserve),
+        car:Math.max(CFG.REQ_CAPITAL, S.policy.targetCapital) };
+}
+function capacityCheck(product, amount, floors){
+  const m = M(), L = limits(floors);
+  const isCard = product === "card";
+  const draw  = isCard ? amount*CFG.CARD_CASH_DRAW : amount;
+  const rwAdd = isCard ? amount*CFG.CCF_CARD*CFG.RW.card : amount*CFG.RW[product];
+  const newCash = m.cash - draw;
+  if(newCash < 0) return { ok:false, why:"not enough cash on hand" };
+  const rr = m.deposits > 0 ? newCash/m.deposits : Infinity;
+  const car = (m.rwa + rwAdd) > 0 ? m.equity/(m.rwa + rwAdd) : Infinity;
+  if(rr < L.rr)  return { ok:false, rr, car,
+    why:`reserve ratio would fall to ${pct(rr)}, under the ${floors?"regulatory minimum":"internal limit"} of ${pct(L.rr)}` };
+  if(car < L.car) return { ok:false, rr, car,
+    why:`capital ratio would fall to ${pct(car)}, under the ${floors?"regulatory minimum":"internal limit"} of ${pct(L.car)}` };
+  return { ok:true, rr, car };
+}
+// Largest principal that still clears both ratios — used to explain a decline.
+function headroom(product, floors){
+  const m = M(), L = limits(floors);
+  const isCard = product === "card";
+  const cashCap = (m.cash - L.rr*m.deposits) / (isCard ? CFG.CARD_CASH_DRAW : 1);
+  const rwPer = isCard ? CFG.CCF_CARD*CFG.RW.card : CFG.RW[product];
+  const carCap = rwPer > 0 ? (m.equity/L.car - m.rwa)/rwPer : Infinity;
+  return Math.max(0, Math.min(cashCap, carCap));
+}
+
+/* ---------------------------- underwriting ---------------------------- */
+function underwrite(app){
+  const p = S.policy;
+  if(app.product === "deposit"){
+    if(app.amount > CFG.KYC_THRESHOLD)
+      return { path:"review", reason:`Deposit of ${fmtMoney(app.amount)} exceeds the ${fmtMoney(CFG.KYC_THRESHOLD)} source-of-funds threshold — compliance review.` };
+    return { path:"approve" };
+  }
+  if(S.reg.restricted) return { path:"decline", reason:"Regulator has restricted new credit extension." };
+  if(!p.products[app.product]) return { path:"decline", reason:"Product not offered under current policy." };
+  if(app.score < p.minScore)
+    return { path:"decline", reason:`Score ${app.score} is below the policy minimum of ${p.minScore}.` };
+  if(app.dti > p.maxDTI)
+    return { path:"decline", reason:`DTI of ${pct(app.dti)} exceeds the policy maximum of ${pct(p.maxDTI)}.` };
+  const cap = capacityCheck(app.product, app.amount);
+  if(!cap.ok) return { path:"decline", reason:`Insufficient lending capacity — ${cap.why}.`, capacity:true };
+  if(app.score >= p.autoApprove) return { path:"approve" };
+  if(app.score < p.autoDecline)
+    return { path:"decline", reason:`Score ${app.score} sits below the auto-decline threshold of ${p.autoDecline}.` };
+  return { path:"review", reason:"Score falls inside the manual review band." };
+}
+
+/* ------------------------------ take-up ------------------------------- */
+function takeupProb(app, offer){
+  if(app.product === "deposit") return 1;
+  const mkt = marketAPR(app.product, app.tier);
+  const delta = offer.apr - mkt;
+  let p = 1/(1 + Math.exp((delta - 1.5)/2.0));
+  const shortfall = offer.amount/app.requested;
+  if(shortfall < 1) p *= clamp(0.35 + 0.65*shortfall, 0.3, 1);
+  p *= clamp(0.7 + S.rep/160, 0.7, 1.12);
+  return clamp(p, 0.02, 0.97);
+}
+function depositAppeal(kind){
+  const delta = effectiveDepAPY(kind) - marketDepAPY(kind);
+  const repAdj = (S.rep - 50)/120;
+  return clamp(1/(1 + Math.exp(-((delta + 0.30 + repAdj)/0.75))), 0.03, 0.98);
+}
+
+/* ------------------------------- booking ------------------------------ */
+function bookDeposit(app){
+  const appeal = depositAppeal(app.kind);
+  if(rnd() > appeal){
+    logDecision(`${app.name} opened elsewhere — ${rate(effectiveDepAPY(app.kind))} APY was not competitive.`, "warn");
+    S.stats.offersDeclined++;
+    return false;
+  }
+  // depositors bring more money when the rate is good
+  const amt = Math.round(app.amount * clamp(0.55 + 0.9*appeal, 0.5, 1.5));
+  const a = makeDepositAccount(app.name, app.kind, amt, false);
+  S.depAccts.push(a);
+  post({ cash: amt, deposits: amt }, "deposit-open");
+  S.stats.customersServed++;
+  DIRTY.portfolio = true;
+  return true;
+}
+
+function bookCredit(app, offer){
+  const product = app.product;
+  const a = {
+    id: S.nextId++, name: app.name, product, tier: app.tier, score: app.score,
+    opened: S.day, apr: offer.apr, income: app.income, dti: app.dti,
+    status: "current", missed: 0, lifeInterest: 0, lifeFees: 0,
+    secured: !!SECURED[product], lastPay: S.day,
+  };
+  if(product === "card"){
+    a.limit = offer.amount; a.balance = 0; a.term = 0;
+    a.revolver = rnd() < clamp(0.82 - (app.score-560)/460, 0.12, 0.85);
+    a.spendRate = clamp(0.06 + 0.28*rnd(), 0.03, 0.42);
+    if(S.fees.cardAnnual > 0){
+      income("feeAnnual", S.fees.cardAnnual,
+             { grossLoans: S.fees.cardAnnual, retained: S.fees.cardAnnual }, "card-annual-fee");
+      a.balance += S.fees.cardAnnual; a.lifeFees += S.fees.cardAnnual;
+    }
+  } else {
+    a.principal = offer.amount; a.balance = offer.amount;
+    a.term = offer.term; a.remaining = offer.term;
+    a.payment = pmtOf(offer.amount, offer.apr, offer.term);
+    post({ cash: -offer.amount, grossLoans: offer.amount }, "originate");
+    const fee = Math.round(offer.amount * S.fees.origPct/100);
+    if(fee > 0){
+      income("feeOrig", fee, { cash: fee, retained: fee }, "origination-fee");
+      a.lifeFees += fee;
+    }
+  }
+  S.loans.push(a);
+  S.stats.customersServed++;
+  DIRTY.portfolio = true;
+  return a;
+}
+
+function decide(app, action, offer){
+  if(app.product !== "deposit") S.stats.monthDecided++;   // fairness is about credit
+  if(action === "approve"){
+    if(app.product === "deposit"){
+      const ok = bookDeposit(app);
+      S.stats.appsApproved++;
+      if(ok) logDecision(`Opened ${app.kind} for ${app.name} — ${fmtMoney(app.amount)}.`, "ok");
+      return;
+    }
+    const o = offer || { apr: app.apr, amount: app.amount, term: app.term };
+    const cap = capacityCheck(app.product, o.amount, true);
+    if(!cap.ok){
+      S.stats.appsDeclined++;
+      logDecision(`${app.name} (${PRODUCT_LABEL[app.product]}) auto-declined — ${cap.why}.`, "bad");
+      return;
+    }
+    S.stats.appsApproved++; S.stats.monthApproved++;
+    if(rnd() > takeupProb(app, o)){
+      S.stats.offersDeclined++;
+      logDecision(`${app.name} declined the offer — ${rate(o.apr)} APR on ${fmtMoney(o.amount)}.`, "warn");
+      return;
+    }
+    bookCredit(app, o);
+    logDecision(`Booked ${PRODUCT_LABEL[app.product].toLowerCase()} for ${app.name} — ${fmtMoney(o.amount)} @ ${rate(o.apr)}.`, "ok");
+  } else {
+    S.stats.appsDeclined++;
+    logDecision(`Declined ${app.name} (${PRODUCT_LABEL[app.product]}) — ${(offer&&offer.reason)||"policy"}.`, "info");
+  }
+}
+
+/* ========================= liquidity primitives ========================= */
+// Raise cash by liquidating securities at a haircut. Returns false if the
+// bank simply cannot fund the outflow — the caller decides what that means.
+function ensureCash(amount){
+  if(S.gl.cash >= amount) return true;
+  if(S.gl.securities > 0){
+    const need = amount - S.gl.cash;
+    const sell = Math.min(S.gl.securities, need/(1 - CFG.SECURITIES_HAIRCUT));
+    const proceeds = sell*(1 - CFG.SECURITIES_HAIRCUT);
+    const loss = sell - proceeds;
+    post({ securities:-sell, cash:proceeds, retained:-loss }, "securities-sale");
+    acc("opex", loss);
+    if(loss > 500) logEvent(`Sold ${fmtMoney(sell)} of securities to raise cash — ${fmtMoney(loss)} fire-sale loss.`, "warn");
+  }
+  return S.gl.cash >= amount - 0.01;
+}
+function withdraw(amount, tag){
+  if(!ensureCash(amount)) return false;
+  post({ cash:-amount, deposits:-amount }, tag||"withdrawal");
+  return true;
+}
+
+/* ====================== credit account performance ====================== */
+function cardMinPayment(a, interest){
+  return Math.min(a.balance, Math.max(25, a.balance*0.02 + interest));
+}
+function applyPayment(a, amt){
+  if(amt <= 0) return;
+  // settle a sub-cent stub in the same posting rather than writing it off silently,
+  // which would drift gl.grossLoans away from the sum of the accounts
+  if(a.balance - amt < 0.01) amt = a.balance;
+  post({ cash: amt, grossLoans: -amt }, "loan-payment");
+  a.balance -= amt;
+  if(a.balance < 1e-9) a.balance = 0;
+}
+function chargeLateFee(a){
+  const f = S.fees.lateFee;
+  if(f <= 0) return;
+  income("feeLate", f, { grossLoans:f, retained:f }, "late-fee");
+  a.balance += f; a.lifeFees += f;
+}
+function closeAccount(a, why){
+  if(a.balance > 0) applyPayment(a, a.balance);
+  a.status = "closed"; a.closedDay = S.day; a.closeWhy = why || "paid off";
+  DIRTY.portfolio = true;
+}
+function chargeOff(a){
+  const bal = a.balance;
+  const loss = bal * CFG.LGD[a.product];
+  const recovery = bal - loss;
+  const drawn = Math.min(S.gl.allowance, loss);
+  const excess = loss - drawn;
+  post({ grossLoans:-bal, cash:recovery, allowance:-drawn, retained:-excess }, "charge-off");
+  if(excess > 0) acc("provision", excess);   // loss beyond the allowance hits the P&L directly
+  a.status = "chargedoff"; a.closedDay = S.day; a.balance = 0;
+  S.stats.chargeOffs++; S.stats.chargeOffAmt += bal;
+  S.monthChargeOffs = (S.monthChargeOffs||0) + bal;
+  DIRTY.portfolio = true;
+}
+function prepayProb(a){
+  const gap = a.apr - marketAPR(a.product, a.tier);
+  return clamp(0.004 + Math.max(0, gap)*0.006, 0.002, 0.06);
+}
+
+function processCredit(a){
+  if(a.status === "chargedoff" || a.status === "closed") return;
+  const isCard = a.product === "card";
+  const mrate = a.apr/1200;
+
+  // --- card: annual fee on the anniversary -----------------------------
+  if(isCard && S.fees.cardAnnual > 0){
+    a.nextAnnual = a.nextAnnual || (a.opened + 360);
+    if(S.day >= a.nextAnnual){
+      const f = S.fees.cardAnnual;
+      income("feeAnnual", f, { grossLoans:f, retained:f }, "card-annual-fee");
+      a.balance += f; a.lifeFees += f; a.nextAnnual += 360;
+    }
+  }
+  // --- card: spending on the line --------------------------------------
+  if(isCard && a.missed === 0){
+    const room = Math.max(0, a.limit - a.balance);
+    let spend = Math.min(room, a.limit * a.spendRate * (0.6 + 0.8*rnd()));
+    if(S.macro.econ === "recession") spend *= 0.85;
+    else if(S.macro.econ === "boom") spend *= 1.1;
+    // the bank has to fund the draw: it cannot spend itself through the reserve floor
+    spend = Math.min(spend, Math.max(0, S.gl.cash - CFG.REQ_RESERVE*S.gl.deposits));
+    spend = Math.round(spend);
+    if(spend > 0){
+      const ic = Math.round(spend*0.015);      // interchange, net of the merchant payout
+      income("feeInterchange", ic, { cash:-(spend-ic), grossLoans:spend, retained:ic }, "card-spend");
+      a.balance += spend; a.lifeFees += ic;
+    }
+  }
+  // --- interest accrual (non-accrual once 90+ days past due) ------------
+  let interest = 0;
+  const accrues = a.missed < 3 && (!isCard || a.revolver || a.balance > 0 && a.missed > 0);
+  if(accrues && a.balance > 0){
+    interest = a.balance*mrate;
+    income("intLoans", interest, { grossLoans:interest, retained:interest }, "interest-accrual");
+    a.balance += interest; a.lifeInterest += interest; S.stats.lifetimeInterest += interest;
+  }
+  if(isCard && a.balance <= 0 && a.missed === 0) return;   // idle card, nothing to collect
+
+  // --- payment behaviour -------------------------------------------------
+  const cure = a.secured ? CFG.CURE.secured : CFG.CURE.unsecured;
+  const pdA = pdAnnual(a);
+  const distressA = clamp(pdA/Math.pow(1-cure, CFG.CHARGEOFF_AT-1), 0, 0.95);
+  const distressM = 1 - Math.pow(1-distressA, 1/12);
+  const scheduled = isCard ? cardMinPayment(a, interest) : a.payment;
+
+  if(a.missed > 0){
+    if(rnd() < cure){
+      applyPayment(a, Math.min(a.balance, scheduled*(a.missed+1)));
+      a.missed = 0; a.status = "current"; a.lastPay = S.day;
+      if(!isCard){ a.remaining--; if(a.balance <= 1 || a.remaining <= 0) closeAccount(a); }
+    } else {
+      a.missed++;
+      chargeLateFee(a);
+      if(a.missed >= CFG.CHARGEOFF_AT){ chargeOff(a); return; }
+      a.status = a.missed === 1 ? "d30" : a.missed === 2 ? "d60" : "d90";
+    }
+    return;
+  }
+  if(rnd() < distressM){
+    a.missed = 1; a.status = "d30"; chargeLateFee(a);
+    return;
+  }
+  // performing
+  let pay;
+  if(isCard) pay = a.revolver ? Math.min(a.balance, scheduled*(1 + 1.6*rnd())) : a.balance;
+  else       pay = Math.min(a.balance, scheduled);
+  applyPayment(a, pay);
+  a.lastPay = S.day;
+  if(!isCard){
+    a.remaining--;
+    if(a.balance <= 1 || a.remaining <= 0){ closeAccount(a); return; }
+    if(rnd() < prepayProb(a)){ closeAccount(a, "paid off early"); return; }
+  }
+}
+
+/* ======================== deposit account behaviour ===================== */
+function processDepositAccount(d){
+  if(d.status !== "open") return true;
+  const apy = d.kind === "cd" ? d.apy : effectiveDepAPY(d.kind);
+  const interest = d.balance*apy/1200;
+  if(interest > 0){
+    income("intDep", interest, { deposits:interest, retained:-interest }, "deposit-interest");
+    d.balance += interest;
+  }
+  if(d.kind !== "cd" && S.fees.depMonthly > 0 && d.balance > S.fees.depMonthly*3){
+    const f = S.fees.depMonthly;
+    income("feeService", f, { deposits:-f, retained:f }, "service-fee");
+    d.balance -= f;
+  }
+  // CD maturity: roll at the current rate, or walk
+  if(d.kind === "cd" && S.day >= d.maturity){
+    if(rnd() < depositAppeal("cd")){
+      d.apy = S.rates.dep.cd; d.maturity = S.day + CFG.CD_TERM*CFG.DAYS_PER_MONTH;
+    } else {
+      return closeDepositAccount(d, "CD matured and was not renewed");
+    }
+  }
+  // organic balance drift
+  const gap = (d.kind === "cd" ? d.apy : effectiveDepAPY(d.kind)) - marketDepAPY(d.kind);
+  const econAdj = S.macro.econ === "boom" ? 0.004 : S.macro.econ === "recession" ? -0.004 : 0;
+  let g = d.drift + econAdj + clamp(gap*d.beta*0.012, -0.02, 0.03) + 0.006*randn();
+  g = clamp(g, -0.09, 0.10);
+  const delta = Math.round(d.balance*g);
+  if(delta > 0){ d.balance += delta; post({ cash:delta, deposits:delta }, "deposit-inflow"); }
+  else if(delta < 0){
+    const out = Math.min(-delta, d.balance);
+    if(!withdraw(out, "deposit-outflow")) return liquidityFailure(out);
+    d.balance -= out;
+  }
+  // attrition
+  if(d.kind !== "cd"){
+    const under = Math.max(0, marketDepAPY(d.kind) - effectiveDepAPY(d.kind));
+    const p = 0.010 + under*0.045*d.beta + Math.max(0, 45 - S.rep)*0.0016;
+    if(rnd() < p) return closeDepositAccount(d, "moved to a competitor");
+  }
+  if(d.balance < 25) return closeDepositAccount(d, "balance exhausted");
+  return true;
+}
+function closeDepositAccount(d, why){
+  const bal = d.balance;
+  if(bal > 0 && !withdraw(bal, "deposit-close")) return liquidityFailure(bal);
+  d.balance = 0; d.status = "closed"; d.closedDay = S.day; d.closeWhy = why;
+  DIRTY.portfolio = true;
+  return true;
+}
+
+/* ============================== treasury =============================== */
+function treasuryOps(){
+  const m = M();
+  // unwind securities if liquidity is getting thin
+  if(S.gl.securities > 0 && m.rr < CFG.REQ_RESERVE + 0.03){
+    const want = (CFG.REQ_RESERVE + 0.05)*m.deposits - m.cash;
+    if(want > 0) ensureCash(m.cash + want);
+  } else if(S.policy.sweep){
+    const excess = m.cash - S.gl.deposits*S.policy.sweepBuffer;
+    if(excess > 25000) post({ cash:-excess, securities:excess }, "sweep");
+  }
+  if(S.gl.securities > 0){
+    const y = Math.max(0.2, S.macro.rate - 0.5);
+    const si = S.gl.securities*y/1200;
+    income("intSec", si, { cash:si, retained:si }, "securities-interest");
+  }
+}
+
+/* ============================= the regulator ============================ */
+function regulatorReview(){
+  const m = M();
+  if(m.equity <= 0){
+    return gameOver("Regulatory seizure",
+      "Equity fell to zero. The bank was insolvent and the regulator closed it the same day, without warning or a cure period.");
+  }
+  if(m.car < CFG.REQ_CAPITAL){
+    S.reg.capStrikes++;
+    if(S.reg.capStrikes === 1){
+      S.rep = clamp(S.rep - 4, 0, 100);
+      logEvent(`Regulator warning: capital ratio of ${pct(m.car)} is below the ${pct(CFG.REQ_CAPITAL)} minimum. Cure it or lending will be restricted.`, "warn");
+      toast("Regulator warning", `Capital ratio ${pct(m.car)} — below the ${pct(CFG.REQ_CAPITAL)} minimum.`, "warn");
+    } else if(S.reg.capStrikes === 2){
+      S.reg.restricted = true;
+      S.rep = clamp(S.rep - 9, 0, 100);
+      logEvent("Consent order issued — no new credit may be extended until the capital ratio is restored.", "bad");
+      toast("Lending restricted", "A consent order bars new credit until capital recovers.", "bad");
+    } else {
+      return gameOver("Regulatory seizure",
+        `The capital ratio stayed below ${pct(CFG.REQ_CAPITAL)} for three consecutive months after a warning and a consent order. The charter was revoked and the bank placed in receivership.`);
+    }
+  } else if(S.reg.capStrikes > 0){
+    S.reg.capStrikes--;
+    if(S.reg.capStrikes === 0 && S.reg.restricted){
+      S.reg.restricted = false;
+      logEvent("Consent order lifted — capital is back above the minimum and lending may resume.", "ok");
+      toast("Restriction lifted", "Capital restored; you may underwrite again.", "ok");
+    }
+  }
+  if(m.rr < CFG.REQ_RESERVE){
+    S.reg.resStrikes++;
+    logEvent(`Reserve ratio of ${pct(m.rr)} is below the ${pct(CFG.REQ_RESERVE)} requirement — depositors are noticing.`, "warn");
+    if(S.reg.resStrikes >= 2) S.rep = clamp(S.rep - 3, 0, 100);
+  } else if(S.reg.resStrikes > 0) S.reg.resStrikes--;
+  return true;
+}
+
+/* ============================== bank runs =============================== */
+function startRun(){
+  S.run.active = true;
+  S.run.daysLeft = rint(CFG.RUN_MIN_DAYS, CFG.RUN_MAX_DAYS);
+  S.run.intensity = CFG.RUN_INTENSITY*clamp(1.5 - S.rep/70, 0.7, 1.9);
+  S.run.count++;
+  S.rep = clamp(S.rep - 20, 0, 100);
+  S.speed = 1;
+  logEvent("A run has started. Depositors are queueing to withdraw.", "bad");
+  toast("Bank run", "Depositors are pulling funds. Raise the emergency APY premium or find liquidity fast.", "bad");
+  bumpAll();
+}
+function runDay(){
+  const accts = [];
+  let runnable = 0;
+  for(const d of S.depAccts){
+    if(d.status === "open" && d.kind !== "cd"){ accts.push(d); runnable += d.balance; }
+  }
+  if(runnable <= 0){ endRun(); return true; }
+  let intensity = S.run.intensity;
+  intensity *= clamp(1 - 0.16*S.policy.apyEmergency, 0.18, 1.4);   // the player's lever
+  intensity *= clamp(1.55 - S.rep/45, 0.55, 1.9);
+  let demanded = 0; const plan = [];
+  for(const d of accts){
+    let w = Math.min(d.balance, d.balance*intensity*(0.5 + 1.0*rnd()));
+    if(d.balance - w < 50) w = d.balance;      // drain the stub rather than stranding it
+    if(w > 1){ plan.push([d, w]); demanded += w; }
+  }
+  if(demanded > 0 && !ensureCash(demanded)){
+    return liquidityFailure(demanded);
+  }
+  for(const [d, w] of plan){
+    d.balance -= w;
+    post({ cash:-w, deposits:-w }, "run-withdrawal");
+    if(d.balance < 0.01){
+      d.balance = 0; d.status = "closed"; d.closedDay = S.day; d.closeWhy = "withdrawn during the run";
+    }
+  }
+  S.run.withdrawn = (S.run.withdrawn||0) + demanded;
+  S.run.intensity *= 0.88;
+  S.run.daysLeft--;
+  DIRTY.portfolio = true;
+  if(S.run.daysLeft <= 0) endRun();
+  return true;
+}
+function endRun(){
+  S.run.active = false; S.run.intensity = 0;
+  S.reg.breachDays = 0;
+  logEvent(`The run has subsided. ${fmtMoney(S.run.withdrawn||0)} of deposits left the bank.`, "warn");
+  toast("Run over", "Deposit outflows have stopped. Rebuild liquidity before the next scare.", "warn");
+  S.run.withdrawn = 0;
+  bumpAll();
+}
+function liquidityFailure(demanded){
+  gameOver("Liquidity failure",
+    `Depositors demanded ${fmtMoney(demanded)} the bank could not produce. Cash and securities were exhausted while the loan book stayed illiquid. The regulator closed the bank the same afternoon.`);
+  return false;
+}
+
+/* ============================== game over ============================== */
+function gameOver(cause, detail){
+  if(S.over) return false;
+  const m = M();
+  S.over = { cause, detail, day:S.day,
+             assets:m.assets, equity:m.equity,
+             peakAssets:Math.max(S.stats.peakAssets, m.assets),
+             peakEquity:Math.max(S.stats.peakEquity, m.equity) };
+  S.speed = 0;
+  logEvent(`GAME OVER — ${cause}.`, "bad");
+  saveGame();
+  bumpAll();
+  showGameOver();
+  return false;
+}
+
+/* ============================ monthly close ============================ */
+function updateMacro(){
+  const m = S.macro;
+  const target = 4.0 + (m.econ === "boom" ? 0.9 : m.econ === "recession" ? -1.1 : 0);
+  m.rate = clamp(m.rate + 0.10*(target - m.rate) + 0.28*randn(), 1.0, 9.0);
+  const r = rnd(); const was = m.econ;
+  if(m.econ === "normal"){ if(r < 0.030) m.econ = "recession"; else if(r < 0.060) m.econ = "boom"; }
+  else if(m.econ === "recession"){ if(r < 0.115) m.econ = "normal"; }
+  else { if(r < 0.105) m.econ = "normal"; }
+  if(m.econ !== was){
+    m.econMonths = 0;
+    const label = { recession:"Recession", normal:"Normal expansion", boom:"Boom" }[m.econ];
+    logEvent(`Economic conditions have shifted: ${label.toLowerCase()}. Default rates now run at ${CFG.MACRO_PD[m.econ].toFixed(2)}× base.`,
+             m.econ === "recession" ? "bad" : m.econ === "boom" ? "ok" : "info");
+    toast("Economy: " + label, m.econ === "recession"
+      ? "Losses will run hot. Tighten underwriting and build the allowance."
+      : m.econ === "boom" ? "Credit losses ease and deposits grow faster."
+      : "Conditions have normalised.", m.econ === "recession" ? "bad" : "ok");
+  } else m.econMonths++;
+}
+
+function reputationTarget(){
+  let t = 50;
+  let dcomp = 0;
+  for(const k in DEP_MKT_MULT) dcomp += effectiveDepAPY(k) - marketDepAPY(k);
+  dcomp /= 3;
+  t += clamp(dcomp*7, -12, 12);
+  let lsum = 0, n = 0;
+  for(const p of PRODUCTS) for(const tr of TIERS){ lsum += marketAPR(p, tr) - S.rates.loan[p][tr]; n++; }
+  t += clamp((lsum/n)*2.2, -12, 12);
+  const ar = S.stats.monthDecided > 0 ? S.stats.monthApproved/S.stats.monthDecided : 0.4;
+  t += clamp((ar - 0.35)*22, -8, 8);
+  const feeLoad = S.fees.origPct/2 + S.fees.lateFee/40 + S.fees.cardAnnual/60 + S.fees.depMonthly/4;
+  t -= clamp(feeLoad*1.4, 0, 10);
+  const mf = marketingFactor();
+  t += clamp(3*(mf.brand - 1)*mf.strength + Math.min(3, S.marketing.budget/12000), 0, 5);
+  t += netIncomeOf(S.is.mtd) > 0 ? 3 : -3;
+  if(M().nplRate > 0.06) t -= 6;
+  if(S.reg.restricted) t -= 10;
+  return clamp(t, 0, 100);
+}
+
+function monthClose(){
+  S.monthChargeOffs = 0;
+  const closedMonth = dateParts(S.day - 1).m;
+  const closedYear  = dateParts(S.day - 1).y;
+
+  for(let i=0;i<S.loans.length;i++){ processCredit(S.loans[i]); if(S.over) return; }
+  for(let i=0;i<S.depAccts.length;i++){ if(!processDepositAccount(S.depAccts[i])) return; }
+  if(S.over) return;
+
+  treasuryOps();
+
+  // loan-loss provisioning: top the allowance up to one year of expected loss
+  const req = M().requiredAllowance;
+  const delta = req - S.gl.allowance;
+  if(Math.abs(delta) > 0.01) income("provision", delta, { allowance:delta, retained:-delta }, "provision");
+
+  // operating costs
+  const m = M();
+  const opex = CFG.OPEX_BASE + m.assets*CFG.OPEX_ASSET_BPS
+             + S.depAccts.reduce((n,d)=>n+(d.status==="open"?1:0),0)*CFG.OPEX_DEP_ACCT
+             + m.activeLoans*CFG.OPEX_CREDIT_ACCT;
+  if(!ensureCash(opex)) return liquidityFailure(opex);
+  income("opex", opex, { cash:-opex, retained:-opex }, "opex");
+  if(S.marketing.budget > 0){
+    const mk = S.marketing.budget;
+    if(!ensureCash(mk)) return liquidityFailure(mk);
+    income("marketing", mk, { cash:-mk, retained:-mk }, "marketing");
+  }
+  // tax on positive pre-tax income (no loss carry-forward in this model)
+  const pre = preTaxOf(S.is.mtd);
+  if(pre > 0){
+    const tax = pre*CFG.TAX_RATE;
+    if(ensureCash(tax)) income("tax", tax, { cash:-tax, retained:-tax }, "tax");
+  }
+
+  updateMacro();
+  S.rep = clamp(S.rep + (reputationTarget() - S.rep)*0.18, 0, 100);
+
+  const mm = M();
+  S.stats.peakAssets = Math.max(S.stats.peakAssets, mm.assets);
+  S.stats.peakEquity = Math.max(S.stats.peakEquity, mm.equity);
+
+  S.history.push({
+    day:S.day, ni:netIncomeOf(S.is.mtd), assets:mm.assets, equity:mm.equity,
+    deposits:mm.deposits, loans:mm.grossLoans, cash:mm.cash, allow:mm.allowance,
+    rr:mm.rr, car:mm.car, rep:S.rep, rate:S.macro.rate, econ:S.macro.econ,
+    npl:mm.nplRate, dq:mm.delinqRate, co:S.monthChargeOffs||0,
+  });
+  if(S.history.length > CFG.MAX_HISTORY) S.history.shift();
+
+  if(!regulatorReview()) return;
+
+  // roll the income statement
+  S.is.last = S.is.mtd;
+  S.is.mtd = blankIS();
+  if(closedMonth === 11){
+    logEvent(`Year ${closedYear+1} closed. Net income ${fmtMoney(netIncomeOf(S.is.ytd))}, total assets ${fmtCompact(mm.assets)}.`,
+             netIncomeOf(S.is.ytd) >= 0 ? "ok" : "warn");
+    S.is.ytd = blankIS();
+  }
+  if(S.expiredThisMonth > 0){
+    logEvent(`${S.expiredThisMonth} applicant${S.expiredThisMonth>1?"s":""} withdrew this month after ${CFG.APP_TTL} days without a decision — unreviewed files cost reputation.`, "warn");
+    S.expiredThisMonth = 0;
+  }
+  S.stats.monthApproved = 0; S.stats.monthDecided = 0;
+
+  if(closedMonth % 3 === 2) pruneDead();
+  bumpAll();
+}
+
+function pruneDead(){
+  const cut = S.day - CFG.PRUNE_AFTER_DAYS;
+  const keepL = [], keepD = [];
+  for(const a of S.loans){
+    if((a.status === "closed" || a.status === "chargedoff") && a.closedDay < cut) continue;
+    keepL.push(a);
+  }
+  for(const d of S.depAccts){
+    if(d.status === "closed" && d.closedDay < cut) continue;
+    keepD.push(d);
+  }
+  S.loans = keepL; S.depAccts = keepD;
+}
+
+/* =============================== daily step ============================= */
+function stepDay(){
+  if(S.over) return;
+  S.day++;
+
+  // --- new applications --------------------------------------------------
+  const n = poisson(arrivalRate());
+  let overflow = 0;
+  for(let i=0;i<n;i++){
+    S.stats.appsReceived++;
+    const app = makeApplication();
+    const dec = underwrite(app);
+    if(dec.path === "approve"){ decide(app, "approve"); }
+    else if(dec.path === "decline"){ decide(app, "deny", { reason: dec.reason }); }
+    else if(S.apps.length >= CFG.QUEUE_CAP){ overflow++; S.stats.appsDeclined++; }
+    else { app.reviewReason = dec.reason; S.apps.push(app); DIRTY.apps = true; }
+  }
+  if(overflow > 0){
+    S.rep = clamp(S.rep - 0.12*overflow, 0, 100);
+    logEvent(`${overflow} application${overflow>1?"s were":" was"} turned away — the review queue is full at ${CFG.QUEUE_CAP}.`, "warn");
+  }
+
+  // --- applications that walk away ---------------------------------------
+  if(S.apps.length){
+    let expired = 0;
+    S.apps = S.apps.filter(a => {
+      // an applicant you are actively negotiating with waits for you
+      if(a.expires <= S.day && a.id !== counterOpen){ expired++; return false; }
+      return true;
+    });
+    if(expired > 0){
+      S.stats.appsExpired += expired;
+      S.stats.appsDeclined += expired;
+      if(counterOpen != null && !S.apps.some(a => a.id === counterOpen)) counterOpen = null;
+      S.rep = clamp(S.rep - 0.18*expired, 0, 100);
+      S.expiredThisMonth = (S.expiredThisMonth||0) + expired;
+      DIRTY.apps = true;
+    }
+  }
+
+  // --- liquidity stress ---------------------------------------------------
+  if(S.run.active){ if(!runDay()) return; }
+  else {
+    if(M().rr < CFG.REQ_RESERVE) S.reg.breachDays++;
+    else S.reg.breachDays = Math.max(0, S.reg.breachDays - 1);
+    let trigger = false;
+    if(S.reg.breachDays >= CFG.RUN_BREACH_DAYS) trigger = true;
+    if(S.rep < 22 && rnd() < 0.02) trigger = true;
+    if(trigger) startRun();
+  }
+  if(S.over) return;
+
+  if(S.day % CFG.DAYS_PER_MONTH === 0) monthClose();
+  if(S.over) return;
+
+  const m = M();
+  S.stats.peakAssets = Math.max(S.stats.peakAssets, m.assets);
+  S.stats.peakEquity = Math.max(S.stats.peakEquity, m.equity);
+
+  DIRTY.kpi = true; DIRTY.overview = true; DIRTY.portfolio = true;
+  if(S.day % 20 === 0) saveGame();
+}
+
+/* ============================== persistence =============================
+   A long session can reach tens of thousands of accounts, which is far more
+   than localStorage will hold as plain JSON. Accounts are therefore stored as
+   positional arrays (no repeated key names) with money rounded to cents. The
+   rounding is reconciled back through the ledger on load, so the balance sheet
+   still balances to the cent after a reload.
+   ======================================================================== */
+const SAVE_KEY = "reserve.bank.save.v1";
+const LOAN_F = ["id","name","product","tier","score","opened","apr","income","dti","status",
+  "missed","lifeInterest","lifeFees","secured","lastPay","limit","balance","term","revolver",
+  "spendRate","nextAnnual","principal","remaining","payment","closedDay","closeWhy"];
+const DEP_F = ["id","name","kind","balance","apy","maturity","opened","status","beta","drift",
+  "closedDay","closeWhy"];
+const ROUND_TO = { balance:2, apr:2, dti:4, income:0, payment:2, lifeInterest:2, lifeFees:2,
+                   spendRate:4, beta:4, drift:6, apy:3, principal:2 };
+function packRows(arr, fields){
+  return arr.map(o => fields.map(k => {
+    const v = o[k];
+    if(v === undefined) return null;
+    if(typeof v === "number" && ROUND_TO[k] != null){
+      const m = Math.pow(10, ROUND_TO[k]);
+      return Math.round(v*m)/m;
+    }
+    return v;
+  }));
+}
+function unpackRows(rows, fields){
+  return rows.map(r => { const o = {};
+    for(let i=0;i<fields.length;i++) if(r[i] !== null && r[i] !== undefined) o[fields[i]] = r[i];
+    return o; });
+}
+const liveLoan = a => a.status !== "closed" && a.status !== "chargedoff";
+function packState(dropDead){
+  const loans = dropDead ? S.loans.filter(liveLoan) : S.loans;
+  const deps  = dropDead ? S.depAccts.filter(d => d.status === "open") : S.depAccts;
+  return Object.assign({}, S, { _p:1, _dropped: !!dropDead,
+    loans: packRows(loans, LOAN_F), depAccts: packRows(deps, DEP_F) });
+}
+// Rounding to cents moves the account detail a fraction away from the ledger
+// aggregates; book the difference as a real (tiny) entry rather than let the
+// identity drift.
+function reconcileDetail(){
+  let sl = 0, sd = 0;
+  for(const a of S.loans) if(liveLoan(a)) sl += a.balance;
+  for(const d of S.depAccts) if(d.status === "open") sd += d.balance;
+  const dL = sl - S.gl.grossLoans, dD = sd - S.gl.deposits;
+  if(Math.abs(dL) > 1e-9 || Math.abs(dD) > 1e-9)
+    post({ grossLoans:dL, deposits:dD, retained:dL - dD }, "load-rounding");
+}
+let saveWarned = false;
+function saveGame(){
+  let json;
+  try{
+    json = JSON.stringify(packState(false));
+    if(json.length > CFG.SAVE_BUDGET) json = JSON.stringify(packState(true));
+    localStorage.setItem(SAVE_KEY, json);
+    S.lastSaved = Date.now(); S.saveBytes = json.length; saveWarned = false;
+    return true;
+  }catch(e){
+    try{
+      json = JSON.stringify(packState(true));
+      localStorage.setItem(SAVE_KEY, json);
+      S.lastSaved = Date.now(); S.saveBytes = json.length;
+      return true;
+    }catch(e2){
+      if(!saveWarned){
+        saveWarned = true;
+        toast("Autosave failed", "Browser storage is full or unavailable. The game keeps running, but progress will not persist — export a save from Settings.", "warn");
+      }
+      return false;
+    }
+  }
+}
+function adoptState(obj){
+  if(!obj || obj.v !== 1 || !obj.gl || !obj.stats) return false;
+  if(obj._p){
+    obj.loans = unpackRows(obj.loans || [], LOAN_F);
+    obj.depAccts = unpackRows(obj.depAccts || [], DEP_F);
+  }
+  S = obj;
+  S.speed = 0;                       // always resume paused
+  LEDGER_ERRORS = [];
+  _mv++;
+  reconcileDetail();
+  bumpAll();
+  return true;
+}
+function loadGame(){
+  try{
+    const raw = localStorage.getItem(SAVE_KEY);
+    if(!raw) return false;
+    return adoptState(JSON.parse(raw));
+  }catch(e){ return false; }
+}
+function clearSave(){ try{ localStorage.removeItem(SAVE_KEY); }catch(e){} }
+
+/* =============================== game loop ============================== */
+let lastT = 0;
+function loop(now){
+  if(!lastT) lastT = now;
+  const dt = Math.min(0.3, (now - lastT)/1000);
+  lastT = now;
+  if(S && !S.over && S.speed > 0){
+    S.dayAcc += dt*S.speed/CFG.SEC_PER_DAY;
+    let steps = 0;
+    while(S.dayAcc >= 1 && steps < 90){ S.dayAcc -= 1; stepDay(); steps++; if(S.over) break; }
+  }
+  renderTick(now);
+  requestAnimationFrame(loop);
+}
+
+/* ============================== rendering ============================== */
+const $ = id => document.getElementById(id);
+function h(tag, cls, html){ const e=document.createElement(tag); if(cls) e.className=cls;
+  if(html!=null) e.innerHTML=html; return e; }
+function esc(s){ return String(s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function setHTML(id, html){ const e=$(id); if(e && e.innerHTML!==html) e.innerHTML=html; }
+function setText(id, txt){ const e=$(id); if(e && e.textContent!==txt) e.textContent=txt; }
+function css(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+
+function toast(title, desc, kind){
+  const t = h("div","toast "+(kind||""), `<div class="tt">${esc(title)}</div><div class="td">${esc(desc||"")}</div>`);
+  $("toasts").appendChild(t);
+  setTimeout(()=>{ t.style.transition="opacity .3s,transform .3s"; t.style.opacity="0";
+    t.style.transform="translateX(14px)"; setTimeout(()=>t.remove(), 320); }, 6200);
+  while($("toasts").children.length > 5) $("toasts").firstChild.remove();
+}
+
+function row(label, value, cls, sub){
+  return `<div class="row${sub?" sub":""}${cls==="total"?" total":""}">
+    <span class="l">${label}</span><span class="r ${cls&&cls!=="total"?cls:""}">${value}</span></div>`;
+}
+function headRow(label){ return `<div class="row head"><span class="l">${label}</span><span></span></div>`; }
+function provText(v){ return v >= 0 ? "("+fmtMoney(v,0)+")" : fmtMoney(-v,0)+" released"; }
+
+function gauge(label, value, req, hint, target){
+  const ok = value >= req, near = value < req*1.3;
+  const color = !ok ? "var(--bad)" : near ? "var(--warn)" : "var(--good)";
+  const w = clamp(value/(3*req), 0, 1)*100;
+  const tMark = target != null
+    ? `<div class="gmark" style="left:${(clamp(target/(3*req),0,1)*100).toFixed(1)}%;background:var(--accent);opacity:.6"></div>` : "";
+  return `<div class="gauge">
+    <div class="gl"><span>${label}</span><span class="gv" style="color:${color}">${isFinite(value)?pct(value):"n/a"}</span></div>
+    <div class="track"><div class="fill" style="width:${w.toFixed(1)}%;background:${color}"></div>
+      <div class="gmark" style="left:33.3%"></div>${tMark}</div>
+    <div class="gh">${hint} · minimum ${pct(req)}${target!=null?` · your limit ${pct(target)}`:""}</div></div>`;
+}
+function bar(label, value, max, color, valueText){
+  const w = clamp(value/max,0,1)*100;
+  return `<div class="gauge"><div class="gl"><span>${label}</span>
+    <span class="gv">${valueText}</span></div>
+    <div class="track"><div class="fill" style="width:${w.toFixed(1)}%;background:${color}"></div></div></div>`;
+}
+
+/* ------------------------------- header ------------------------------- */
+function renderHeader(){
+  const m = M();
+  setText("hdrBankName", S.bankName);
+  setText("hdrTier", sizeTier(m.assets));
+  setText("hdrDate", fmtDate(S.day));
+  setText("kpiAssets", fmtCompact(m.assets));
+  setText("kpiAssetsSub", `${m.activeLoans} credit · ${m.depAccts} deposit`);
+  setText("kpiCash", fmtCompact(m.cash));
+  setText("kpiCashSub", m.securities>0 ? fmtCompact(m.securities)+" securities" : "no securities");
+  setText("kpiDeposits", fmtCompact(m.deposits));
+  setText("kpiDepositsSub", "LDR " + pct(m.ldr,0));
+  setText("kpiLoans", fmtCompact(m.netLoans));
+  setText("kpiLoansSub", "gross " + fmtCompact(m.grossLoans));
+  setText("kpiEquity", fmtCompact(m.equity));
+  setText("kpiEquitySub", "paid-in " + fmtCompact(S.gl.paidIn));
+  const rrEl = $("kpiRR"), carEl = $("kpiCAR");
+  rrEl.textContent = isFinite(m.rr)? pct(m.rr) : "n/a";
+  rrEl.style.color = m.rr < CFG.REQ_RESERVE ? "var(--bad)" : m.rr < CFG.REQ_RESERVE*1.3 ? "var(--warn)" : "";
+  setText("kpiRRSub", "min " + pct(CFG.REQ_RESERVE,0));
+  carEl.textContent = isFinite(m.car)? pct(m.car) : "n/a";
+  carEl.style.color = m.car < CFG.REQ_CAPITAL ? "var(--bad)" : m.car < CFG.REQ_CAPITAL*1.3 ? "var(--warn)" : "";
+  setText("kpiCARSub", "min " + pct(CFG.REQ_CAPITAL,0));
+  const ni = netIncomeOf(S.is.mtd);
+  const niEl = $("kpiNI");
+  niEl.textContent = fmtCompact(ni);
+  niEl.style.color = ni>=0 ? "var(--good)" : "var(--bad)";
+  setText("kpiNISub", "last month " + fmtCompact(netIncomeOf(S.is.last)));
+
+  const pill = $("tabAppCount");
+  pill.textContent = S.apps.length;
+  pill.className = "pill" + (S.apps.length? "" : " zero");
+
+  // speed buttons
+  for(const b of $("speedCtl").children) b.classList.toggle("on", +b.dataset.speed === S.speed);
+
+  // banners
+  const rb = $("restrictBar");
+  rb.classList.toggle("hidden", !S.reg.restricted);
+  if(S.reg.restricted) rb.textContent = "⚠ CONSENT ORDER — no new credit may be extended until the capital ratio is back above " + pct(CFG.REQ_CAPITAL,0) + ". Deposits are still accepted.";
+
+  const bn = $("runBanner");
+  if(S.run.active){
+    bn.classList.remove("hidden");
+    if(bn.dataset.built !== "1"){
+      bn.dataset.built = "1";
+      bn.innerHTML = `<b>BANK RUN</b><span id="runInfo"></span>
+        <span style="margin-left:auto;display:flex;align-items:center;gap:8px">
+          <span>Emergency APY premium</span>
+          <input type="range" id="runApy" min="0" max="4" step="0.25" style="width:130px">
+          <span class="num" id="runApyV" style="min-width:44px"></span>
+          <button class="btn sm" id="runPause">Pause</button></span>`;
+      $("runApy").value = S.policy.apyEmergency;
+      $("runApy").oninput = e => { S.policy.apyEmergency = +e.target.value; DIRTY.rates = true; };
+      $("runPause").onclick = () => setSpeed(0);
+    }
+    $("runInfo").textContent = `${S.run.daysLeft} day${S.run.daysLeft===1?"":"s"} of pressure left · ${fmtCompact(S.run.withdrawn||0)} withdrawn · cash ${fmtCompact(M().cash)}`;
+    if(document.activeElement !== $("runApy")) $("runApy").value = S.policy.apyEmergency;
+    $("runApyV").textContent = "+" + S.policy.apyEmergency.toFixed(2) + "%";
+  } else { bn.classList.add("hidden"); bn.dataset.built = ""; }
+
+  const lb = $("ledgerBar");
+  if(LEDGER_ERRORS.length || Math.abs(m.identityDrift) > 0.05){
+    lb.classList.remove("hidden");
+    lb.textContent = `LEDGER DRIFT: A - L - E = ${m.identityDrift.toFixed(4)} · ${LEDGER_ERRORS.length} unbalanced entr${LEDGER_ERRORS.length===1?"y":"ies"} (see Settings › Developer)`;
+  } else lb.classList.add("hidden");
+}
+
+/* ------------------------------ overview ------------------------------ */
+function renderOverview(){
+  const m = M(), g = S.gl;
+  setHTML("ovBS",
+    headRow("Assets") +
+    row("Cash &amp; reserves", fmtMoney(g.cash)) +
+    (g.securities>0 ? row("Investment securities", fmtMoney(g.securities)) : "") +
+    row("Loans &amp; cards, gross", fmtMoney(g.grossLoans)) +
+    row("Less allowance for losses", "("+fmtMoney(g.allowance)+")", "muted") +
+    row("Total assets", fmtMoney(m.assets), "total") +
+    headRow("Liabilities") +
+    row("Customer deposits", fmtMoney(g.deposits)) +
+    headRow("Equity") +
+    row("Paid-in capital", fmtMoney(g.paidIn)) +
+    row("Retained earnings", fmtMoney(g.retained), sign(g.retained)) +
+    row("Total equity", fmtMoney(m.equity), "total")
+  );
+
+  setHTML("ovGauges",
+    gauge("Reserve ratio", m.rr, CFG.REQ_RESERVE, "cash ÷ deposits", S.policy.targetReserve) +
+    gauge("Capital ratio", m.car, CFG.REQ_CAPITAL, "equity ÷ risk-weighted assets", S.policy.targetCapital) +
+    `<div class="rule"></div>` +
+    row("Risk-weighted assets", fmtMoney(m.rwa)) +
+    row("Loan-to-deposit ratio", pct(m.ldr)) +
+    row("Internal limits", pct(S.policy.targetReserve,0)+" / "+pct(S.policy.targetCapital,0), "muted") +
+    row("Unsecured headroom (policy)", fmtCompact(headroom("personal")), "muted") +
+    row("Unsecured headroom (legal)", fmtCompact(headroom("personal", true)), "muted")
+  );
+
+  const is = S.is.mtd, nii = is.intLoans + is.intSec - is.intDep;
+  const fees = is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService;
+  const ni = netIncomeOf(is);
+  setText("ovISPeriod", "month to date");
+  setHTML("ovIS",
+    row("Interest income", fmtMoney(is.intLoans + is.intSec, 0)) +
+    row("Interest expense", "("+fmtMoney(is.intDep,0)+")") +
+    row("Net interest income", fmtMoney(nii,0), "total") +
+    row("Provision for losses", provText(is.provision), is.provision>0?"bad":"good") +
+    row("Fee income", fmtMoney(fees,0)) +
+    row("Operating expense", "("+fmtMoney(is.opex + is.marketing,0)+")") +
+    row("Tax", "("+fmtMoney(is.tax,0)+")") +
+    row("Net income", fmtMoney(ni,0), "total") +
+    `<div class="rule"></div>` +
+    row("Last full month", fmtMoney(netIncomeOf(S.is.last),0), sign(netIncomeOf(S.is.last))) +
+    row("Year to date", fmtMoney(netIncomeOf(S.is.ytd),0), sign(netIncomeOf(S.is.ytd)))
+  );
+
+  const econLabel = { recession:"Recession", normal:"Normal", boom:"Boom" }[S.macro.econ];
+  const econCls = { recession:"bad", normal:"", boom:"good" }[S.macro.econ];
+  const arr = arrivalRate();
+  setHTML("ovFranchise",
+    bar("Reputation", S.rep, 100,
+        S.rep<30?"var(--bad)":S.rep<50?"var(--warn)":"var(--good)", S.rep.toFixed(1)) +
+    row("Economy", `<span class="${econCls}">${econLabel}</span> · ${CFG.MACRO_PD[S.macro.econ].toFixed(2)}× losses`) +
+    row("Market policy rate", rate(S.macro.rate)) +
+    row("Applicant flow", arr.toFixed(1)+" / day") +
+    row("In review queue", S.apps.length + (S.apps.length>=CFG.QUEUE_CAP? " (full)":"")) +
+    row("Marketing", fmtMoney(S.marketing.budget)+" / mo") +
+    row("Customers served", S.stats.customersServed.toLocaleString("en-US"))
+  );
+
+  // alerts
+  const A = [];
+  if(S.run.active) A.push(["bad","!",`Bank run in progress — ${S.run.daysLeft} days of elevated withdrawals left. Raising the emergency APY premium slows the outflow but costs interest expense.`]);
+  if(S.reg.restricted) A.push(["bad","!","Consent order active: no new credit until the capital ratio recovers."]);
+  else if(S.reg.capStrikes>0) A.push(["warn","!",`Capital warning outstanding (${S.reg.capStrikes} strike). Two more months below ${pct(CFG.REQ_CAPITAL,0)} and the charter is revoked.`]);
+  if(m.car < CFG.REQ_CAPITAL) A.push(["bad","▼",`Capital ratio ${pct(m.car)} is below the ${pct(CFG.REQ_CAPITAL,0)} minimum. Stop lending, shrink risk-weighted assets, or earn your way out.`]);
+  else if(m.car < CFG.REQ_CAPITAL*1.25) A.push(["warn","▼",`Capital ratio ${pct(m.car)} is close to the minimum — only ${fmtCompact(headroom("personal"))} of unsecured lending headroom left.`]);
+  if(m.rr < CFG.REQ_RESERVE) A.push(["bad","▼",`Reserve ratio ${pct(m.rr)} is below the ${pct(CFG.REQ_RESERVE,0)} requirement. ${CFG.RUN_BREACH_DAYS - S.reg.breachDays} days before depositors start to run.`]);
+  else if(m.rr < CFG.REQ_RESERVE*1.25) A.push(["warn","▼",`Reserve ratio ${pct(m.rr)} leaves little liquidity buffer.`]);
+  if(m.nplRate > 0.05) A.push(["bad","▲",`Non-performing loans are ${pct(m.nplRate)} of the book. Charge-offs are coming — check the allowance.`]);
+  else if(m.delinqRate > 0.06) A.push(["warn","▲",`Delinquencies at ${pct(m.delinqRate)} of the book and rising.`]);
+  if(S.macro.econ === "recession") A.push(["warn","~",`Recession: default probabilities run at ${CFG.MACRO_PD.recession}× base. Tighten policy or price for it.`]);
+  if(S.apps.length >= CFG.QUEUE_CAP*0.6) A.push(["warn","≡",`${S.apps.length} applications waiting. Unreviewed files walk away after ${CFG.APP_TTL} days and cost reputation.`]);
+  if(netIncomeOf(S.is.last) < 0 && S.history.length>1) A.push(["warn","−",`The bank lost ${fmtMoney(-netIncomeOf(S.is.last))} last month. Persistent losses erode equity and the capital ratio.`]);
+  if(S.rep < 30) A.push(["bad","!",`Reputation at ${S.rep.toFixed(0)}. Below 22 a scare can spark a run on its own.`]);
+  if(!A.length) A.push(["ok","✓","Ratios are comfortable, the book is performing, and nothing needs your attention."]);
+  setHTML("ovAlerts", A.map(([k,ic,t])=>`<div class="alert ${k}"><span class="ic">${ic}</span><span>${t}</span></div>`).join(""));
+
+  const mix = m.byProd;
+  setHTML("ovHealth",
+    row("Delinquent (30+ DPD)", fmtMoney(m.delinqAmt,0)+" · "+pct(m.delinqRate)) +
+    row("Non-performing (90+)", fmtMoney(m.nplAmt,0)+" · "+pct(m.nplRate), m.nplRate>0.04?"bad":"") +
+    row("Allowance", fmtMoney(m.allowance,0)+" · "+pct(m.coverage)+" of gross") +
+    row("Required allowance", fmtMoney(m.requiredAllowance,0), "muted") +
+    row("Lifetime charge-offs", fmtMoney(S.stats.chargeOffAmt,0)+` (${S.stats.chargeOffs})`) +
+    headRow("Book mix") +
+    row("Credit cards", fmtMoney(mix.card,0), null, true) +
+    row("Personal loans", fmtMoney(mix.personal,0), null, true) +
+    row("Auto loans", fmtMoney(mix.auto,0), null, true) +
+    row("Mortgages", fmtMoney(mix.mortgage,0), null, true)
+  );
+
+  setHTML("ovLog", S.log.length ? S.log.map(l =>
+    `<div class="logline"><span class="lt">${fmtDate(l.day)}</span><span class="${l.kind==="bad"?"bad":l.kind==="warn"?"warn":l.kind==="ok"?"good":""}">${esc(l.text)}</span></div>`
+  ).join("") : `<div class="empty">Nothing has happened yet.</div>`);
+}
+
+/* ---------------------------- applications ---------------------------- */
+function pdEstimate(app, dti){
+  const base = CFG.PD[app.tier]*CFG.PD_PRODUCT[app.product]*CFG.MACRO_PD[S.macro.econ];
+  return clamp(base*(1 + Math.max(0, (dti!=null?dti:app.dti) - 0.36)*2.5), 0.0005, 0.85);
+}
+function fundingCost(){
+  let bal = 0, cost = 0;
+  for(const d of S.depAccts) if(d.status==="open"){
+    bal += d.balance;
+    cost += d.balance*(d.kind==="cd" ? d.apy : effectiveDepAPY(d.kind));
+  }
+  return bal>0 ? cost/bal : effectiveDepAPY("savings");
+}
+function analyseOffer(app, offer){
+  const amount = offer.amount, apr = offer.apr, term = offer.term;
+  const payment = monthlyObligation(app.product, amount, apr, term);
+  const dti = (app.debtPmt + payment)/app.income;
+  const pd = pdEstimate(app, dti);
+  const lgd = CFG.LGD[app.product];
+  const expLoss = amount*pd*lgd;
+  const cap = capacityCheck(app.product, amount, true);
+  const soft = capacityCheck(app.product, amount, false);
+  const spread = apr - fundingCost();
+  const grossYield = app.product==="card" ? amount*0.30*apr/100 : amount*apr/100*0.55;
+  return { payment, dti, pd, expLoss, cap, soft, spread, grossYield,
+           takeup: takeupProb(app, {apr, amount, term}), mkt: marketAPR(app.product, app.tier) };
+}
+
+function renderApplications(){
+  const wrap = $("appList");
+  if(counterOpen != null && wrap.querySelector(".counter.open")) return;   // don't nuke an open form
+
+  let list = S.apps.slice();
+  const fp = $("appFilterProduct").value;
+  if(fp) list = list.filter(a => a.product === fp);
+  const sortBy = $("appSort").value;
+  list.sort((a,b) => {
+    if(sortBy === "age") return a.day - b.day;
+    if(sortBy === "score") return (b.score||0) - (a.score||0);
+    if(sortBy === "amount") return b.amount - a.amount;
+    if(sortBy === "risk"){
+      const ea = a.product==="deposit"?0:analyseOffer(a,{apr:a.apr,amount:a.amount,term:a.term}).expLoss;
+      const eb = b.product==="deposit"?0:analyseOffer(b,{apr:b.apr,amount:b.amount,term:b.term}).expLoss;
+      return ea - eb;
+    }
+    return 0;
+  });
+
+  setText("appQueueInfo", `${S.apps.length} in queue · capacity ${CFG.QUEUE_CAP} · files expire after ${CFG.APP_TTL} days`);
+  if(!list.length){
+    wrap.innerHTML = `<div class="empty">Nothing awaiting review. Applications inside your manual-review band land here — widen the band on <b>Rates &amp; Policy</b> to see more files, or narrow it to let the engine decide.</div>`;
+    return;
+  }
+  const grid = h("div","appgrid");
+  for(const app of list) grid.appendChild(appCard(app));
+  wrap.innerHTML = "";
+  wrap.appendChild(grid);
+}
+
+function appCard(app){
+  const daysLeft = app.expires - S.day;
+  const card = h("div", "appcard" + (daysLeft <= 3 ? " urgent" : ""));
+  card.dataset.id = app.id;
+
+  if(app.product === "deposit"){
+    card.innerHTML = `
+      <div class="apphead">
+        <div><div class="who">${esc(app.name)}</div>
+          <div class="meta">Age ${app.age} · ${fmtMoney(app.income)}/mo income · score ${app.score}</div></div>
+        <div class="prod"><div class="p">${app.kind === "cd" ? "12-mo CD" : app.kind}</div>
+          <div class="a">${fmtMoney(app.amount)}</div></div>
+      </div>
+      <div class="appbody">
+        <div class="facts">
+          ${fact("Deposit", fmtMoney(app.amount))}
+          ${fact("Product", app.kind)}
+          ${fact("APY offered", rate(effectiveDepAPY(app.kind)))}
+          ${fact("Market APY", rate(marketDepAPY(app.kind)))}
+          ${fact("Annual interest", fmtMoney(app.amount*effectiveDepAPY(app.kind)/100))}
+          ${fact("Waiting", daysLeft + "d left")}
+        </div>
+        <div class="appnote warn">${esc(app.reviewReason||"")} Accepting adds funding you can lend against; declining costs nothing but the relationship.</div>
+      </div>
+      <div class="appacts">
+        <button class="btn ok" data-act="approve">Accept deposit</button>
+        <button class="btn" data-act="deny">Decline</button>
+      </div>`;
+  } else {
+    const off = { apr: app.apr, amount: app.amount, term: app.term };
+    const an = analyseOffer(app, off);
+    const noteCls = !an.cap.ok ? "bad" : (!an.soft.ok || an.dti > S.policy.maxDTI) ? "warn" : "";
+    const capText = !an.cap.ok
+      ? `<b>Cannot book:</b> ${an.cap.why}.`
+      : an.soft.ok
+        ? `Post-booking: reserve ${pct(an.cap.rr)}, capital ${pct(an.cap.car)}.`
+        : `<b>Override:</b> bookable, but ${an.soft.why} — the engine would not have taken this.`;
+    card.innerHTML = `
+      <div class="apphead">
+        <div><div class="who">${esc(app.name)}</div>
+          <div class="meta">Age ${app.age} · ${fmtMoney(app.income)}/mo · ${TIER_NAME[app.tier]}</div></div>
+        <div class="prod"><div class="p">${PRODUCT_LABEL[app.product]}</div>
+          <div class="a">${fmtMoney(app.amount)}${app.term?` · ${app.term}mo`:""}</div></div>
+      </div>
+      <div class="appbody">
+        <div class="facts">
+          ${fact("Credit score", `<span class="scorechip tier${app.tier}">${app.score}</span>`)}
+          ${fact("Requested", fmtMoney(app.requested))}
+          ${fact("Existing debt", fmtMoney(app.debtPmt)+"/mo")}
+          ${fact("Payment", fmtMoney(an.payment)+"/mo")}
+          ${fact("DTI with loan", `<span class="${an.dti>S.policy.maxDTI?"bad":an.dti>0.36?"warn":"good"}">${pct(an.dti)}</span>`)}
+          ${fact("Offer APR", rate(off.apr))}
+          ${fact("Market APR", rate(an.mkt))}
+          ${fact("Spread vs funding", rate(an.spread))}
+          ${fact("1-yr default prob", pct(an.pd,2))}
+          ${fact("Expected loss", fmtMoney(an.expLoss))}
+          ${fact("Take-up odds", pct(an.takeup,0))}
+          ${fact("File expires", daysLeft + "d")}
+        </div>
+        <div class="appnote ${noteCls}">${esc(app.reviewReason||"")} ${capText}</div>
+      </div>
+      <div class="appacts">
+        <button class="btn ok" data-act="approve" ${an.cap.ok?"":"disabled"}>Approve</button>
+        <button class="btn" data-act="counter">Counter</button>
+        <button class="btn" data-act="deny">Deny</button>
+      </div>
+      <div class="counter" data-counter>
+        <div class="crow">
+          <label class="field"><span>APR %</span><input type="number" step="0.25" min="0.5" max="45" data-f="apr" value="${off.apr}"></label>
+          <label class="field"><span>${app.product==="card"?"Limit":"Amount"}</span><input type="number" step="100" min="100" data-f="amount" value="${off.amount}"></label>
+          ${app.product==="card" ? `<label class="field"><span>&nbsp;</span><span class="hint">revolving</span></label>`
+            : `<label class="field"><span>Term (mo)</span><input type="number" step="6" min="6" max="360" data-f="term" value="${off.term}"></label>`}
+        </div>
+        <div class="hint" data-preview></div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <button class="btn primary sm" data-act="send" style="flex:1">Send counter-offer</button>
+          <button class="btn sm" data-act="cancel">Cancel</button>
+        </div>
+      </div>`;
+  }
+
+  card.addEventListener("click", ev => {
+    const b = ev.target.closest("button[data-act]");
+    if(!b) return;
+    const act = b.dataset.act;
+    if(act === "counter"){
+      const c = card.querySelector("[data-counter]");
+      c.classList.add("open"); counterOpen = app.id; updateCounterPreview(card, app);
+      return;
+    }
+    if(act === "cancel"){
+      card.querySelector("[data-counter]").classList.remove("open"); counterOpen = null; DIRTY.apps = true; return;
+    }
+    if(act === "send"){
+      const o = readCounter(card, app);
+      counterOpen = null;
+      resolveApp(app, "approve", o);
+      return;
+    }
+    if(act === "approve") resolveApp(app, "approve", null);
+    if(act === "deny") resolveApp(app, "deny", { reason:"declined on review" });
+  });
+  card.addEventListener("input", ev => {
+    if(ev.target.matches("[data-f]")) updateCounterPreview(card, app);
+  });
+  return card;
+}
+function fact(l, v){ return `<div class="fact"><span class="fl">${l}</span><span class="fv">${v}</span></div>`; }
+function readCounter(card, app){
+  const get = f => { const e = card.querySelector(`[data-f="${f}"]`); return e ? +e.value : null; };
+  return { apr: clamp(get("apr")||app.apr, 0.5, 45),
+           amount: Math.max(100, get("amount")||app.amount),
+           term: app.product === "card" ? 0 : clamp(get("term")||app.term, 6, 360) };
+}
+function updateCounterPreview(card, app){
+  const o = readCounter(card, app);
+  const an = analyseOffer(app, o);
+  const el = card.querySelector("[data-preview]");
+  el.innerHTML = `Payment ${fmtMoney(an.payment)}/mo · DTI ${pct(an.dti)} · expected loss ${fmtMoney(an.expLoss)} ·
+    take-up <b>${pct(an.takeup,0)}</b> · ${an.cap.ok ? `reserve ${pct(an.cap.rr)} / capital ${pct(an.cap.car)} after booking`
+    : `<span class="bad">cannot book — ${an.cap.why}</span>`}${an.cap.ok && !an.soft.ok ? ` <span class="warn">(past your internal limit)</span>` : ""}`;
+}
+function resolveApp(app, action, offer){
+  const i = S.apps.findIndex(a => a.id === app.id);
+  if(i < 0){
+    counterOpen = null;
+    toast("File already gone", `${app.name} withdrew the application before you decided.`, "warn");
+    DIRTY.apps = true; renderApplications();
+    return;
+  }
+  S.apps.splice(i, 1);
+  decide(app, action, offer);
+  counterOpen = null;
+  DIRTY.apps = true; DIRTY.kpi = true; DIRTY.overview = true; DIRTY.portfolio = true;
+  renderApplications();
+  renderDecisions();
+}
+function renderDecisions(){
+  setHTML("appDecisions", S.decisions.length ? S.decisions.map(l =>
+    `<div class="logline"><span class="lt">${fmtDate(l.day)}</span><span class="${l.kind==="bad"?"bad":l.kind==="warn"?"warn":l.kind==="ok"?"good":""}">${esc(l.text)}</span></div>`
+  ).join("") : `<div class="empty">No decisions yet.</div>`);
+}
+
+/* ------------------------------ portfolio ----------------------------- */
+const PF = { sort:"balance", dir:-1, page:0 };
+const PF_COLS = {
+  credit: [["name","Customer",0],["product","Product",0],["tier","Tier",0],["score","Score",1],
+           ["balance","Balance",1],["size","Limit / orig.",1],["apr","APR",1],["status","Status",0],
+           ["interest","Interest earned",1],["opened","Opened",0]],
+  deposit:[["name","Customer",0],["kind","Type",0],["balance","Balance",1],["apy","APY",1],
+           ["status","Status",0],["opened","Opened",0]],
+};
+function pfRows(){
+  const type = $("pfType").value;
+  const q = $("pfSearch").value.trim().toLowerCase();
+  const prod = $("pfProduct").value;
+  const st = $("pfStatus").value;
+  let rows;
+  if(type === "credit"){
+    rows = S.loans.filter(a => {
+      if(prod && a.product !== prod) return false;
+      if(st === "active" && (a.status==="closed"||a.status==="chargedoff")) return false;
+      if(st === "current" && a.status !== "current") return false;
+      if(st === "delinquent" && !(a.missed>0 && a.status!=="chargedoff")) return false;
+      if(st === "chargedoff" && a.status !== "chargedoff") return false;
+      if(st === "closed" && a.status !== "closed") return false;
+      if(q && a.name.toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    }).map(a => ({ ref:a, name:a.name, product:PRODUCT_LABEL[a.product], tier:a.tier, score:a.score,
+      balance:a.balance, size:a.product==="card"?a.limit:a.principal, apr:a.apr, status:a.status,
+      interest:a.lifeInterest + a.lifeFees, opened:a.opened }));
+  } else {
+    rows = S.depAccts.filter(d => {
+      if((st === "active" || st === "open") && d.status !== "open") return false;
+      if(st === "closed" && d.status !== "closed") return false;
+      if(q && d.name.toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    }).map(d => ({ ref:d, name:d.name, kind:d.kind==="cd"?"12-mo CD":d.kind, balance:d.balance,
+      apy:d.kind==="cd"?d.apy:effectiveDepAPY(d.kind), status:d.status, opened:d.opened }));
+  }
+  const k = PF.sort, dir = PF.dir;
+  rows.sort((a,b)=>{
+    const x = a[k], y = b[k];
+    if(x == null) return 1; if(y == null) return -1;
+    if(typeof x === "string") return dir*x.localeCompare(y);
+    return dir*(x - y);
+  });
+  return rows;
+}
+function statusTag(s){
+  const map = { current:["cur","Current"], d30:["d30","30 DPD"], d60:["d60","60 DPD"],
+                d90:["d90","90+ DPD"], chargedoff:["co","Charged off"], closed:["closed","Closed"],
+                open:["cur","Open"] };
+  const [c,l] = map[s] || ["t", s];
+  return `<span class="tag ${c}">${l}</span>`;
+}
+function renderPortfolio(){
+  const m = M();
+  // product filter options depend on type
+  const type = $("pfType").value;
+  const pfp = $("pfProduct");
+  const want = type === "credit"
+    ? `<option value="">All products</option>` + PRODUCTS.map(p=>`<option value="${p}">${PRODUCT_LABEL[p]}</option>`).join("")
+    : `<option value="">All types</option>`;
+  if(pfp.dataset.for !== type){ const v = pfp.value; pfp.innerHTML = want; pfp.dataset.for = type; pfp.value = v || ""; }
+  const pfs = $("pfStatus");
+  if(pfs.dataset.for !== type){
+    const v = pfs.dataset.for ? pfs.value : "active";   // first build has no value to preserve
+    pfs.innerHTML = type === "credit"
+      ? `<option value="active">Active only</option><option value="">All statuses</option>
+         <option value="current">Current</option><option value="delinquent">Delinquent</option>
+         <option value="chargedoff">Charged off</option><option value="closed">Closed / paid off</option>`
+      : `<option value="active">Open only</option><option value="">All</option><option value="closed">Closed</option>`;
+    pfs.dataset.for = type;
+    pfs.value = [...pfs.options].some(o=>o.value===v) ? v : "active";
+  }
+
+  // summary
+  let depTot=0, depCost=0, cdBal=0, openDep=0;
+  for(const d of S.depAccts) if(d.status==="open"){
+    openDep++; depTot += d.balance;
+    depCost += d.balance*(d.kind==="cd"?d.apy:effectiveDepAPY(d.kind));
+    if(d.kind==="cd") cdBal += d.balance;
+  }
+  const avgApy = depTot>0 ? depCost/depTot : 0;
+  let wApr=0, gross=0, byStatus={current:0,d30:0,d60:0,d90:0};
+  for(const a of S.loans) if(a.status!=="closed" && a.status!=="chargedoff"){
+    gross += a.balance; wApr += a.balance*a.apr;
+    if(byStatus[a.status]!=null) byStatus[a.status] += a.balance;
+  }
+  const avgApr = gross>0 ? wApr/gross : 0;
+  const lastIS = S.is.last, prior = S.history.length>1 ? S.history[S.history.length-2] : null;
+  const avgEarning = prior ? (prior.loans + m.grossLoans)/2 : m.grossLoans;
+  const yieldPct = avgEarning>0 ? (lastIS.intLoans*12)/avgEarning*100 : 0;
+  const costPct  = depTot>0 ? (lastIS.intDep*12)/depTot*100 : 0;
+  setHTML("pfSummary",
+    card4("Credit book", row("Active accounts", m.activeLoans) + row("Gross balance", fmtMoney(gross,0)) +
+      row("Weighted APR", rate(avgApr)) + row("Average balance", fmtMoney(m.activeLoans? gross/m.activeLoans:0,0))) +
+    card4("Deposit book", row("Open accounts", openDep) + row("Total deposits", fmtMoney(depTot,0)) +
+      row("Weighted APY", rate(avgApy)) + row("Term (CD) share", pct(depTot? cdBal/depTot:0))) +
+    card4("Spread", row("Asset yield (last mo, ann.)", rate(yieldPct)) + row("Funding cost (last mo, ann.)", rate(costPct)) +
+      row("Net interest margin", rate(yieldPct-costPct), sign(yieldPct-costPct)) + row("Loan-to-deposit", pct(m.ldr))) +
+    card4("Delinquency", row("Current", fmtMoney(byStatus.current,0)) + row("30 DPD", fmtMoney(byStatus.d30,0), byStatus.d30?"warn":"") +
+      row("60 DPD", fmtMoney(byStatus.d60,0), byStatus.d60?"warn":"") + row("90+ DPD", fmtMoney(byStatus.d90,0), byStatus.d90?"bad":""))
+  );
+
+  const cols = PF_COLS[type];
+  setHTML("pfHead", "<tr>" + cols.map(([k,l,n]) =>
+    `<th class="sortable ${n?"n":""}" data-k="${k}">${l}${PF.sort===k?(PF.dir>0?" ▲":" ▼"):""}</th>`).join("") + "</tr>");
+
+  const rows = pfRows();
+  const per = 50, pages = Math.max(1, Math.ceil(rows.length/per));
+  if(PF.page >= pages) PF.page = pages-1;
+  const slice = rows.slice(PF.page*per, PF.page*per+per);
+  setText("pfCount", `${rows.length.toLocaleString("en-US")} record${rows.length===1?"":"s"}`);
+  if(!slice.length){ setHTML("pfBody", `<tr><td colspan="${cols.length}"><div class="empty">No accounts match these filters.</div></td></tr>`); }
+  else setHTML("pfBody", slice.map(r => "<tr>" + cols.map(([k,l,n]) => {
+      let v;
+      if(k === "status") v = statusTag(r.status);
+      else if(k === "opened") v = fmtDate(r.opened);
+      else if(k === "apr" || k === "apy") v = rate(r[k]);
+      else if(k === "balance" || k === "size" || k === "interest") v = fmtMoney(r[k]||0, 0);
+      else if(k === "tier") v = `<span class="tag t">${r.tier}</span>`;
+      else v = esc(r[k]==null?"—":r[k]);
+      return `<td class="${n?"n":""}">${v}</td>`;
+    }).join("") + "</tr>").join(""));
+
+  setHTML("pfPager", pages>1
+    ? `<button class="btn sm" data-pg="-1" ${PF.page===0?"disabled":""}>Previous</button>
+       <span>Page ${PF.page+1} of ${pages}</span>
+       <button class="btn sm" data-pg="1" ${PF.page>=pages-1?"disabled":""}>Next</button>`
+    : `<span class="dim">Showing all ${rows.length.toLocaleString("en-US")}</span>`);
+}
+function card4(title, body){
+  return `<div class="card"><h3>${title}</h3><div class="body tight">${body}</div></div>`;
+}
+
+/* ------------------------- bound input plumbing ------------------------ */
+function getPath(o, p){ return p.split(".").reduce((x,k)=>x[k], o); }
+function setPath(o, p, v){ const ps=p.split("."); let x=o;
+  for(let i=0;i<ps.length-1;i++) x=x[ps[i]]; x[ps[ps.length-1]]=v; }
+function handleBind(e){
+  const el = e.target.closest("[data-bind]");
+  if(!el) return;
+  let v;
+  if(el.type === "checkbox") v = el.checked;
+  else {
+    v = parseFloat(el.value);
+    if(!isFinite(v)) return;
+    if(el.dataset.lo != null) v = Math.max(+el.dataset.lo, v);
+    if(el.dataset.hi != null) v = Math.min(+el.dataset.hi, v);
+    if(el.dataset.scale) v *= +el.dataset.scale;
+    if(el.dataset.round) v = Math.round(v);
+    if(el.type !== "range") el.value = el.dataset.scale ? round2(v/+el.dataset.scale) : round2(v);
+  }
+  setPath(S, el.dataset.bind, v);
+  // policy bands must stay coherent
+  const p = S.policy;
+  p.autoDecline = clamp(p.autoDecline, 300, 850);
+  p.autoApprove = clamp(Math.max(p.autoApprove, p.autoDecline), 300, 850);
+  p.minScore = clamp(p.minScore, 300, 850);
+  p.targetReserve = clamp(p.targetReserve, CFG.REQ_RESERVE, 0.6);
+  p.targetCapital = clamp(p.targetCapital, CFG.REQ_CAPITAL, 0.6);
+  DIRTY.kpi = true; DIRTY.overview = true;
+  if(el.dataset.re) buildTab(el.dataset.re);
+  else refreshRateMarks();
+  saveGame();
+}
+function numRow(label, path, value, step, lo, hi, hint, scale, re){
+  return `<label class="field"><span>${label}</span>
+    <input type="number" step="${step}" data-bind="${path}" value="${value}"
+      data-lo="${lo}" data-hi="${hi}"${scale?` data-scale="${scale}"`:""}${re?` data-re="${re}"`:""}>
+    ${hint?`<span class="hint">${hint}</span>`:""}</label>`;
+}
+
+/* --------------------------- rates & policy --------------------------- */
+function buildRates(){
+  const d = S.rates.dep;
+  setHTML("rsDeposits",
+    numRow("Checking APY %", "rates.dep.checking", d.checking, 0.05, 0, 12,
+      `Market ${rate(marketDepAPY("checking"))}. Cheap, sticky funding — but small balances.`) +
+    numRow("Savings APY %", "rates.dep.savings", d.savings, 0.05, 0, 12,
+      `Market ${rate(marketDepAPY("savings"))}. The main growth lever for the deposit base.`) +
+    numRow("12-month CD APY %", "rates.dep.cd", d.cd, 0.05, 0, 12,
+      `Market ${rate(marketDepAPY("cd"))}. Costliest funding, but locked — CD money cannot run.`) +
+    `<div class="rule"></div>` +
+    numRow("Emergency APY premium %", "policy.apyEmergency", S.policy.apyEmergency, 0.25, 0, 4,
+      "Added to every deposit rate. Calms a run fast; every basis point is real interest expense.") +
+    `<div class="hint">Blended cost of funds right now: <b>${rate(fundingCost())}</b>.</div>`);
+
+  setHTML("rsFees",
+    numRow("Origination fee %", "fees.origPct", S.fees.origPct, 0.25, 0, 6,
+      "Charged at closing on term loans. Immediate fee income; heavy fees dent reputation.") +
+    numRow("Late fee $", "fees.lateFee", S.fees.lateFee, 5, 0, 75,
+      "Assessed on each missed payment. Adds to the balance, so it also earns interest — and raises the loss if it charges off.") +
+    numRow("Card annual fee $", "fees.cardAnnual", S.fees.cardAnnual, 5, 0, 250,
+      "Billed at origination and each anniversary.") +
+    numRow("Deposit monthly service fee $", "fees.depMonthly", S.fees.depMonthly, 1, 0, 25,
+      "Charged on checking and savings. Reliable income, unpopular with depositors.") +
+    `<div class="hint">Fee income last month: <b>${fmtMoney(S.is.last.feeOrig+S.is.last.feeLate+S.is.last.feeAnnual+S.is.last.feeInterchange+S.is.last.feeService,0)}</b>.</div>`);
+
+  let g = `<thead><tr><th>Product</th>${TIERS.map(t=>`<th>${t} · ${TIER_LABEL[t]}</th>`).join("")}</tr></thead><tbody>`;
+  for(const p of PRODUCTS){
+    g += `<tr><td>${PRODUCT_LABEL[p]}</td>` + TIERS.map(t =>
+      `<td><input type="number" step="0.25" data-bind="rates.loan.${p}.${t}" data-lo="0.5" data-hi="45"
+        value="${S.rates.loan[p][t]}"><div class="mkt" data-mkt="${p}.${t}">${rate(marketAPR(p,t))}</div></td>`).join("") + `</tr>`;
+  }
+  setHTML("rsGrid", g + "</tbody>");
+
+  const p = S.policy;
+  setHTML("rsPolicy",
+    numRow("Minimum credit score", "policy.minScore", p.minScore, 5, 300, 850,
+      "Hard floor. Anything below is declined regardless of the bands below.", null, "rates") +
+    numRow("Maximum DTI %", "policy.maxDTI", round2(p.maxDTI*100), 1, 5, 90,
+      "Debt-to-income including the new payment. Hard floor.", 0.01, "rates") +
+    numRow("Auto-approve at score ≥", "policy.autoApprove", p.autoApprove, 5, 300, 850,
+      "Booked by the engine without your involvement.", null, "rates") +
+    numRow("Auto-decline below score", "policy.autoDecline", p.autoDecline, 5, 300, 850,
+      "Everything between this and the auto-approve line lands in your review queue.", null, "rates") +
+    bandDiagram() +
+    `<div class="rule"></div><div style="font-size:11px;color:var(--text-2);margin-bottom:5px">Products offered</div>` +
+    PRODUCTS.map(pr => `<label class="switch"><input type="checkbox" data-bind="policy.products.${pr}"
+      ${p.products[pr]?"checked":""}> ${PRODUCT_LABEL[pr]}
+      <span class="dim">· ${pct(CFG.PD[ "C" ]*CFG.PD_PRODUCT[pr],1)} base loss at C tier · ${pct(CFG.RW[pr],0)} risk weight</span></label>`).join(""));
+
+  setHTML("rsTreasury",
+    PRODUCTS.map(pr => numRow(`Max ${PRODUCT_LABEL[pr].toLowerCase()} ${pr==="card"?"limit":"amount"} $`,
+      `policy.maxAmount.${pr}`, p.maxAmount[pr], 500, 500, 2000000,
+      `Requests above this are countered down automatically, which lowers take-up.`)).join("") +
+    `<div class="rule"></div>` +
+    `<label class="switch"><input type="checkbox" data-bind="policy.sweep" data-re="rates" ${p.sweep?"checked":""}>
+      Sweep excess cash into investment securities</label>
+     <div class="hint" style="margin-bottom:8px">Securities yield the policy rate less 50bp and carry a ${pct(CFG.RW.securities,0)} risk weight,
+       but they are <i>not</i> cash — sweeping lowers your reserve ratio, and a forced sale in a run costs ${pct(CFG.SECURITIES_HAIRCUT,1)}.</div>` +
+    numRow("Cash buffer to retain (% of deposits)", "policy.sweepBuffer", round2(p.sweepBuffer*100), 1, 11, 90,
+      "Anything above this is swept at each month-end.", 0.01) +
+    `<div class="rule"></div>` +
+    row("Securities held", fmtMoney(S.gl.securities,0)) +
+    row("Unsecured lending headroom", fmtCompact(headroom("personal"))) +
+    row("Mortgage lending headroom", fmtCompact(headroom("mortgage"))));
+
+  setHTML("rsLimits",
+    `<div class="hint" style="margin-bottom:9px">The regulator's floors are ${pct(CFG.REQ_RESERVE,0)} reserve and
+      ${pct(CFG.REQ_CAPITAL,0)} capital. Your own limits sit above them: the underwriting engine stops lending when a
+      booking would breach <i>these</i>, which is what keeps a buffer for deposit outflows. Set them at the regulatory
+      floor and you will grow fastest — and the first bad month will put you in breach.</div>` +
+    numRow("Internal reserve limit %", "policy.targetReserve", round2(p.targetReserve*100), 0.5,
+      CFG.REQ_RESERVE*100, 60, `Cash held back as a share of deposits. Currently ${pct(M().rr)}.`, 0.01, "rates") +
+    numRow("Internal capital limit %", "policy.targetCapital", round2(p.targetCapital*100), 0.5,
+      CFG.REQ_CAPITAL*100, 60, `Equity against risk-weighted assets. Currently ${pct(M().car)}.`, 0.01, "rates") +
+    `<div class="rule"></div>` +
+    row("Days in reserve breach", S.reg.breachDays + " / " + CFG.RUN_BREACH_DAYS, S.reg.breachDays?"warn":"") +
+    row("Capital strikes", S.reg.capStrikes + " / 3", S.reg.capStrikes?"bad":"") +
+    row("You may still approve manually down to the legal floor", "", "muted"));
+}
+function bandDiagram(){
+  const p = S.policy;
+  const lo = 300, hi = 850, w = x => ((clamp(x,lo,hi)-lo)/(hi-lo)*100).toFixed(1)+"%";
+  const dec = Math.max(p.minScore, p.autoDecline);
+  return `<div style="margin:10px 0 4px">
+    <div style="position:relative;height:16px;border-radius:4px;overflow:hidden;background:var(--bad-soft)">
+      <div style="position:absolute;left:${w(dec)};right:${(100-parseFloat(w(p.autoApprove))).toFixed(1)}%;top:0;bottom:0;background:var(--warn-soft)"></div>
+      <div style="position:absolute;left:${w(p.autoApprove)};right:0;top:0;bottom:0;background:var(--good-soft)"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--text-3);margin-top:3px">
+      <span>300 · auto-decline</span><span>${dec}–${p.autoApprove} · your queue</span><span>${p.autoApprove}+ auto-approve · 850</span>
+    </div></div>`;
+}
+function refreshRateMarks(){
+  document.querySelectorAll("[data-mkt]").forEach(el => {
+    const [p,t] = el.dataset.mkt.split(".");
+    const v = rate(marketAPR(p,t));
+    if(el.textContent !== v) el.textContent = v;
+  });
+  setText("rsMktDep", "market policy rate " + rate(S.macro.rate));
+  setText("rsMktLoan", "market policy rate " + rate(S.macro.rate));
+}
+
+/* ------------------------------ marketing ----------------------------- */
+function buildMarketing(){
+  const mk = S.marketing, mf = marketingFactor();
+  setHTML("mkBudget",
+    `<label class="field"><span>Monthly marketing spend</span>
+       <input type="range" min="0" max="60000" step="1000" data-bind="marketing.budget" data-re="marketing" value="${mk.budget}">
+       <span class="hint">Currently <b class="num">${fmtMoney(mk.budget)}</b> per month, charged as operating expense at each month-end.</span></label>
+     <div class="rule"></div>
+     <div style="font-size:11px;color:var(--text-2);margin-bottom:6px">Allocation</div>` +
+    ["brand","deposit","lending"].map(k =>
+      `<label class="field"><span>${{brand:"Brand &amp; trust",deposit:"Deposit gathering",lending:"Lending"}[k]}
+         — ${Math.round(100*mk.mix[k]/(mk.mix.brand+mk.mix.deposit+mk.mix.lending))}%</span>
+       <input type="range" min="0" max="10" step="1" data-bind="marketing.mix.${k}" data-re="marketing" value="${mk.mix[k]}"></label>`).join("") +
+    `<div class="hint">Brand spend lifts reputation and overall arrivals; deposit spend skews the applicant mix toward funding;
+      lending spend skews it toward credit applications. Allocation only matters once spend is meaningful
+      (${pct(mf.strength,0)} effective at today's budget).</div>`);
+
+  const arr = arrivalRate(), mix = productMix();
+  const tot = Object.values(mix).reduce((a,b)=>a+b,0);
+  setHTML("mkPipeline",
+    row("Applicants per day", arr.toFixed(2)) +
+    row("Per month", Math.round(arr*30)) +
+    row("Reputation", S.rep.toFixed(1) + " / 100") +
+    row("Reputation target", reputationTarget().toFixed(1), "muted") +
+    `<div class="rule"></div>` + headRow("Expected mix") +
+    Object.keys(mix).map(k => row(PRODUCT_LABEL[k], pct(mix[k]/tot,0) + " · " + (arr*30*mix[k]/tot).toFixed(0) + "/mo", null, true)).join("") +
+    `<div class="rule"></div>` +
+    row("Deposit take-up (savings)", pct(depositAppeal("savings"),0)) +
+    row("Offers declined lifetime", S.stats.offersDeclined) +
+    row("Applications expired", S.stats.appsExpired));
+
+  let dcomp = 0; for(const k in DEP_MKT_MULT) dcomp += effectiveDepAPY(k) - marketDepAPY(k); dcomp /= 3;
+  let lsum = 0, n = 0;
+  for(const p of PRODUCTS) for(const t of TIERS){ lsum += marketAPR(p,t) - S.rates.loan[p][t]; n++; }
+  const ar = S.stats.monthDecided > 0 ? S.stats.monthApproved/S.stats.monthDecided : 0.4;
+  const feeLoad = S.fees.origPct/2 + S.fees.lateFee/40 + S.fees.cardAnnual/60 + S.fees.depMonthly/4;
+  const drv = [
+    ["Deposit pricing vs market", clamp(dcomp*7,-12,12), rate(dcomp)+" avg spread"],
+    ["Loan pricing vs market", clamp((lsum/n)*2.2,-12,12), rate(lsum/n)+" below market"],
+    ["Approval fairness", clamp((ar-0.35)*22,-8,8), pct(ar,0)+" approved this month"],
+    ["Fee load", -clamp(feeLoad*1.4,0,10), "index "+feeLoad.toFixed(2)],
+    ["Marketing", clamp(3*(marketingFactor().brand-1)*marketingFactor().strength + Math.min(3, S.marketing.budget/12000),0,5), fmtMoney(S.marketing.budget)+"/mo"],
+    ["Profitability", netIncomeOf(S.is.mtd) > 0 ? 3 : -3, fmtMoney(netIncomeOf(S.is.mtd),0)+" MTD"],
+    ["Asset quality", M().nplRate > 0.06 ? -6 : 0, pct(M().nplRate)+" non-performing"],
+    ["Regulatory standing", S.reg.restricted ? -10 : 0, S.reg.restricted ? "consent order" : "clean"],
+  ];
+  setHTML("mkRep",
+    `<div class="hint" style="margin-bottom:8px">Reputation drifts 18% of the way toward its target each month.
+      Target is 50 plus the contributions below; events (runs, sanctions) hit the score directly.</div>` +
+    drv.map(([l,v,note]) => row(l + ` <span class="dim">· ${note}</span>`,
+      (v>=0?"+":"") + v.toFixed(1), sign(v))).join("") +
+    row("Target", reputationTarget().toFixed(1), "total") +
+    row("Current", S.rep.toFixed(1), "total"));
+}
+
+/* ----------------------------- financials ----------------------------- */
+function isPeriod(){
+  const v = $("finISPeriod").value;
+  return { mtd:S.is.mtd, last:S.is.last, ytd:S.is.ytd, life:S.is.life }[v] || S.is.mtd;
+}
+function buildFinancials(){
+  const m = M(), g = S.gl;
+  setText("finBSDate", fmtDate(S.day));
+  setHTML("finBS",
+    headRow("Assets") +
+    row("Cash and due from the Fed", fmtMoney(g.cash,0)) +
+    row("Investment securities", fmtMoney(g.securities,0)) +
+    row("Loans and cards, gross", fmtMoney(g.grossLoans,0)) +
+    row("Credit cards", fmtMoney(m.byProd.card,0), null, true) +
+    row("Personal loans", fmtMoney(m.byProd.personal,0), null, true) +
+    row("Auto loans", fmtMoney(m.byProd.auto,0), null, true) +
+    row("Mortgages", fmtMoney(m.byProd.mortgage,0), null, true) +
+    row("Allowance for loan losses", "("+fmtMoney(g.allowance,0)+")") +
+    row("Net loans", fmtMoney(m.netLoans,0)) +
+    row("TOTAL ASSETS", fmtMoney(m.assets,0), "total") +
+    headRow("Liabilities") +
+    row("Deposits", fmtMoney(g.deposits,0)) +
+    row("TOTAL LIABILITIES", fmtMoney(m.liabilities,0), "total") +
+    headRow("Equity") +
+    row("Paid-in capital", fmtMoney(g.paidIn,0)) +
+    row("Retained earnings", fmtMoney(g.retained,0), sign(g.retained)) +
+    row("TOTAL EQUITY", fmtMoney(m.equity,0), "total") +
+    `<div class="rule"></div>` +
+    row("Assets − liabilities − equity", m.identityDrift.toFixed(4),
+        Math.abs(m.identityDrift) < 0.01 ? "good" : "bad"));
+
+  const is = isPeriod();
+  const nii = is.intLoans + is.intSec - is.intDep;
+  const fees = is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService;
+  setHTML("finIS",
+    headRow("Interest income") +
+    row("Loans and cards", fmtMoney(is.intLoans,0), null, true) +
+    row("Investment securities", fmtMoney(is.intSec,0), null, true) +
+    row("Total interest income", fmtMoney(is.intLoans+is.intSec,0)) +
+    row("Interest expense — deposits", "("+fmtMoney(is.intDep,0)+")") +
+    row("NET INTEREST INCOME", fmtMoney(nii,0), "total") +
+    row("Provision for credit losses", provText(is.provision), is.provision>0?"bad":"good") +
+    headRow("Non-interest income") +
+    row("Origination fees", fmtMoney(is.feeOrig,0), null, true) +
+    row("Late fees", fmtMoney(is.feeLate,0), null, true) +
+    row("Card annual fees", fmtMoney(is.feeAnnual,0), null, true) +
+    row("Interchange", fmtMoney(is.feeInterchange,0), null, true) +
+    row("Deposit service charges", fmtMoney(is.feeService,0), null, true) +
+    row("Total fee income", fmtMoney(fees,0)) +
+    headRow("Non-interest expense") +
+    row("Operating expense", "("+fmtMoney(is.opex,0)+")", null, true) +
+    row("Marketing", "("+fmtMoney(is.marketing,0)+")", null, true) +
+    row("PRE-TAX INCOME", fmtMoney(preTaxOf(is),0), "total") +
+    row("Income tax", "("+fmtMoney(is.tax,0)+")") +
+    row("NET INCOME", fmtMoney(netIncomeOf(is),0), "total"));
+
+  drawCharts();
+}
+
+/* -------------------------------- charts ------------------------------- */
+function drawChart(cv, series, opts){
+  opts = opts || {};
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, hgt = cv.clientHeight;
+  if(!w || !hgt) return;
+  cv.width = w*dpr; cv.height = hgt*dpr;
+  const c = cv.getContext("2d");
+  c.setTransform(dpr,0,0,dpr,0,0);
+  c.clearRect(0,0,w,hgt);
+  const padL = 52, padR = 8, padT = 8, padB = 18;
+  const iw = w - padL - padR, ih = hgt - padT - padB;
+  const line = css("--line"), t3 = css("--text-3");
+
+  let lo = Infinity, hi = -Infinity, n = 0;
+  for(const s of series){ for(const v of s.data){ if(v<lo) lo=v; if(v>hi) hi=v; } n = Math.max(n, s.data.length); }
+  if(opts.rules) for(const r of opts.rules){ if(r.y<lo) lo=r.y; if(r.y>hi) hi=r.y; }
+  if(!isFinite(lo)){ lo=0; hi=1; }
+  if(opts.zero){ lo = Math.min(0, lo); hi = Math.max(0, hi); }
+  if(hi===lo){ hi = lo+1; }
+  const pad = (hi-lo)*0.12; lo -= pad; hi += pad;
+  const X = i => padL + (n<=1 ? iw/2 : i/(n-1)*iw);
+  const Y = v => padT + ih - (v-lo)/(hi-lo)*ih;
+
+  c.strokeStyle = line; c.lineWidth = 1; c.font = "10px "+css("--mono").split(",")[0];
+  c.fillStyle = t3; c.textAlign = "right"; c.textBaseline = "middle";
+  for(let i=0;i<=4;i++){
+    const v = lo + (hi-lo)*i/4, y = Math.round(Y(v))+0.5;
+    c.beginPath(); c.moveTo(padL, y); c.lineTo(w-padR, y); c.stroke();
+    c.fillText((opts.fmt||fmtCompact)(v), padL-6, y);
+  }
+  if(opts.rules) for(const r of opts.rules){
+    c.save(); c.setLineDash([4,3]); c.strokeStyle = r.color; c.lineWidth = 1.2;
+    const y = Math.round(Y(r.y))+0.5;
+    c.beginPath(); c.moveTo(padL,y); c.lineTo(w-padR,y); c.stroke(); c.restore();
+  }
+  for(const s of series){
+    if(s.data.length < 1) continue;
+    c.strokeStyle = s.color; c.lineWidth = 1.8; c.lineJoin = "round";
+    if(s.fill){
+      c.beginPath();
+      s.data.forEach((v,i)=>{ const x=X(i), y=Y(v); i?c.lineTo(x,y):c.moveTo(x,y); });
+      c.lineTo(X(s.data.length-1), Y(Math.max(lo,0))); c.lineTo(X(0), Y(Math.max(lo,0)));
+      c.closePath(); c.globalAlpha = 0.12; c.fillStyle = s.color; c.fill(); c.globalAlpha = 1;
+    }
+    c.beginPath();
+    s.data.forEach((v,i)=>{ const x=X(i), y=Y(v); i?c.lineTo(x,y):c.moveTo(x,y); });
+    c.stroke();
+  }
+  if(n){
+    c.fillStyle = t3; c.textAlign="left"; c.textBaseline="bottom";
+    const H = opts.hist || [];
+    if(H.length){ c.fillText(fmtMonth(H[0].day), padL, hgt-3);
+      c.textAlign="right"; c.fillText(fmtMonth(H[H.length-1].day), w-padR, hgt-3); }
+  }
+}
+function legend(id, items){
+  setHTML(id, items.map(([c,l])=>`<span><i style="background:${c}"></i>${l}</span>`).join(""));
+}
+function drawCharts(){
+  const H = S.history.slice(-120);
+  if(!H.length){
+    for(const id of ["chNI","chRatios","chBal","chCredit"]){
+      const cv = $(id), c = cv.getContext("2d");
+      cv.width = cv.clientWidth; cv.height = cv.clientHeight;
+      c.clearRect(0,0,cv.width,cv.height);
+      c.fillStyle = css("--text-3"); c.font = "12px "+css("--sans").split(",")[0];
+      c.textAlign = "center"; c.fillText("No closed months yet", cv.width/2, cv.height/2);
+    }
+    return;
+  }
+  const A = css("--accent"), G = css("--good"), B = css("--bad"), W = css("--warn"), I = css("--info");
+  drawChart($("chNI"), [{label:"Net income", color:A, data:H.map(x=>x.ni), fill:true}],
+    { zero:true, hist:H, rules:[{y:0, color:css("--text-3")}] });
+  legend("lgNI", [[A,"Monthly net income"]]);
+
+  drawChart($("chRatios"), [
+      {label:"Reserve", color:A, data:H.map(x=>Math.min(0.5, x.rr)*100)},
+      {label:"Capital", color:I, data:H.map(x=>Math.min(0.5, x.car)*100)}],
+    { fmt:v=>v.toFixed(0)+"%", hist:H,
+      rules:[{y:CFG.REQ_RESERVE*100,color:B},{y:CFG.REQ_CAPITAL*100,color:W}] });
+  legend("lgRatios", [[A,"Reserve ratio"],[I,"Capital ratio"],[B,"10% reserve minimum"],[W,"8% capital minimum"]]);
+  $("lgRatios").insertAdjacentHTML("beforeend", `<span class="dim">plotted to a 50% ceiling</span>`);
+
+  drawChart($("chBal"), [
+      {label:"Deposits", color:A, data:H.map(x=>x.deposits)},
+      {label:"Loans", color:G, data:H.map(x=>x.loans)},
+      {label:"Equity", color:I, data:H.map(x=>x.equity)}],
+    { hist:H, zero:true });
+  legend("lgBal", [[A,"Deposits"],[G,"Gross loans"],[I,"Equity"]]);
+
+  drawChart($("chCredit"), [
+      {label:"Delinquency", color:W, data:H.map(x=>x.dq*100)},
+      {label:"Non-performing", color:B, data:H.map(x=>x.npl*100)},
+      {label:"Policy rate", color:A, data:H.map(x=>x.rate)}],
+    { fmt:v=>v.toFixed(1)+"%", hist:H, zero:true });
+  legend("lgCredit", [[W,"30+ DPD % of book"],[B,"90+ DPD % of book"],[A,"Market policy rate %"]]);
+}
+
+/* ------------------------------- settings ----------------------------- */
+function buildSettings(){
+  setHTML("setSim",
+    `<div class="hint" style="margin-bottom:9px">One simulated day takes <b>${CFG.SEC_PER_DAY}s</b> at 1&times;, so a
+      ${CFG.DAYS_PER_MONTH}-day month closes every <b>${(CFG.SEC_PER_DAY*CFG.DAYS_PER_MONTH)}s</b>.
+      At 15&times; a month takes ${(CFG.SEC_PER_DAY*CFG.DAYS_PER_MONTH/15).toFixed(0)}s.</div>` +
+    `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">` +
+      [0,1,4,15].map(s=>`<button class="btn ${S.speed===s?"primary":""}" data-speed2="${s}">${s===0?"Paused":s+"×"}</button>`).join("") +
+    `</div>` +
+    `<label class="switch"><input type="checkbox" id="setPauseBlur" ${S.pauseOnBlur!==false?"checked":""}>
+      Pause when this tab is in the background</label>` +
+    `<div class="rule"></div>` +
+    row("Bank", esc(S.bankName)) + row("Difficulty", DIFFICULTIES[S.difficulty].name) +
+    row("Founded", "day 0") + row("Days survived", S.day) +
+    row("Months closed", S.history.length));
+
+  setHTML("setSave",
+    `<div class="hint" style="margin-bottom:9px">The game autosaves to this browser every 20 simulated days and
+      whenever you make a decision. Saves resume paused.</div>` +
+    row("Last autosave", S.lastSaved ? new Date(S.lastSaved).toLocaleTimeString() : "not yet") +
+    row("Save size", S.saveBytes ? (S.saveBytes/1024).toFixed(0)+" KB" : "not yet written") +
+    row("Accounts stored", (S.loans.length + S.depAccts.length).toLocaleString("en-US") +
+        (S.saveBytes > CFG.SAVE_BUDGET*0.95 ? " (closed accounts shed to fit)" : "")) +
+    `<div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:11px">
+      <button class="btn" id="btnSaveNow">Save now</button>
+      <button class="btn" id="btnExport">Export save</button>
+      <button class="btn" id="btnImport">Import save</button>
+      <button class="btn danger" id="btnReset">Start a new bank</button>
+    </div>
+    <input type="file" id="fileImport" accept="application/json" class="hidden">`);
+
+  setHTML("setRef",
+    headRow("Regulatory minimums") +
+    row("Reserve ratio (cash ÷ deposits)", pct(CFG.REQ_RESERVE,0)) +
+    row("Capital ratio (equity ÷ RWA)", pct(CFG.REQ_CAPITAL,0)) +
+    row("Risk weights", "cash 0% · secured 50% · unsecured 100% · securities 20%") +
+    row("Card undrawn conversion factor", pct(CFG.CCF_CARD,0)) +
+    headRow("Annual default probability by tier") +
+    TIERS.map(t=>row(`${t} · ${TIER_LABEL[t]} <span class="dim">${TIER_NAME[t]}</span>`, pct(CFG.PD[t],2), null, true)).join("") +
+    row("Product multiplier", "mortgage 0.55× · auto 0.80× · personal 1.15× · card 1.30×", "muted", true) +
+    row("Macro multiplier", "recession 2.5× · normal 1.0× · boom 0.6×", "muted", true) +
+    headRow("Loss given default") +
+    Object.keys(CFG.LGD).map(k=>row(PRODUCT_LABEL[k], pct(CFG.LGD[k],0), null, true)).join("") +
+    headRow("Delinquency") +
+    row("Monthly cure probability", `${pct(CFG.CURE.unsecured,0)} unsecured · ${pct(CFG.CURE.secured,0)} secured`, null, true) +
+    row("Charge-off at", CFG.CHARGEOFF_AT + " missed payments (120 DPD)", null, true) +
+    row("Non-accrual at", "90 days past due", null, true) +
+    row("Allowance target", "one year of expected loss (balance × PD × LGD)", null, true));
+
+  refreshDev();
+}
+function auditLedger(){
+  const m = M();
+  let sumDep = 0, sumLoans = 0;
+  for(const d of S.depAccts) sumDep += d.status === "open" ? d.balance : 0;
+  for(const a of S.loans) sumLoans += (a.status === "closed" || a.status === "chargedoff") ? 0 : a.balance;
+  return { identity:m.identityDrift, depDrift:S.gl.deposits - sumDep, loanDrift:S.gl.grossLoans - sumLoans,
+           errors:LEDGER_ERRORS.length };
+}
+function refreshDev(){
+  const a = auditLedger();
+  const ok = v => Math.abs(v) < 0.05 ? "good" : "bad";
+  setHTML("setDev",
+    `<div class="hint" style="margin-bottom:9px">Every balance-sheet movement goes through one double-entry
+      <code>post()</code>. These checks re-derive the aggregates from the individual accounts; anything other than
+      zero is a bug, not a game mechanic.</div>` +
+    row("Assets − liabilities − equity", a.identity.toFixed(6), ok(a.identity)) +
+    row("gl.deposits − Σ account balances", a.depDrift.toFixed(6), ok(a.depDrift)) +
+    row("gl.grossLoans − Σ loan balances", a.loanDrift.toFixed(6), ok(a.loanDrift)) +
+    row("Unbalanced journal entries", a.errors, a.errors ? "bad" : "good") +
+    (LEDGER_ERRORS.length
+      ? `<div class="rule"></div><div style="font-family:var(--mono);font-size:11px;max-height:130px;overflow:auto">` +
+        LEDGER_ERRORS.slice(-8).map(e=>`day ${e.day} · ${esc(e.tag)} · drift ${e.drift.toFixed(6)}`).join("<br>") + `</div>`
+      : "") +
+    `<div class="rule"></div>` +
+    row("RNG state", S.rngState) + row("Accounts in memory", S.loans.length + " credit · " + S.depAccts.length + " deposit") +
+    row("History points", S.history.length) +
+    `<div style="margin-top:10px"><button class="btn sm" id="btnAudit">Re-run audit</button></div>`);
+}
+
+/* ------------------------------ tab plumbing --------------------------- */
+let activeTab = "overview";
+let lastKpi = 0, lastTab = 0, lastFin = 0;
+function buildTab(name){
+  if(name === "rates"){ buildRates(); refreshRateMarks(); }
+  else if(name === "marketing") buildMarketing();
+  else if(name === "financials") buildFinancials();
+  else if(name === "settings") buildSettings();
+  else if(name === "applications"){ renderApplications(); renderDecisions(); }
+  else if(name === "portfolio") renderPortfolio();
+  else if(name === "overview") renderOverview();
+}
+function panelBusy(name){
+  const p = document.querySelector(`[data-panel="${name}"]`);
+  return p && p.contains(document.activeElement) &&
+    /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName);
+}
+function setTab(name){
+  activeTab = name;
+  for(const b of $("tabNav").children) b.classList.toggle("on", b.dataset.tab === name);
+  for(const p of document.querySelectorAll(".tabpanel")) p.classList.toggle("on", p.dataset.panel === name);
+  buildTab(name);
+}
+function renderTick(now){
+  if(!S) return;
+  if(now - lastKpi > 140){ lastKpi = now; renderHeader(); }
+  if(now - lastTab > 320){
+    lastTab = now;
+    const t = activeTab;
+    if(t === "overview"){ if(DIRTY.overview){ renderOverview(); DIRTY.overview = false; } }
+    else if(t === "applications"){ if(DIRTY.apps){ renderApplications(); renderDecisions(); DIRTY.apps = false; } }
+    else if(t === "portfolio"){ if(DIRTY.portfolio){ renderPortfolio(); DIRTY.portfolio = false; } }
+    else if(t === "rates"){ refreshRateMarks(); }
+    else if(t === "marketing"){ if(!panelBusy("marketing")) buildMarketing(); }
+    else if(t === "settings"){ if(!panelBusy("settings")) refreshDev(); }
+    else if(t === "financials" && now - lastFin > 900){ lastFin = now; buildFinancials(); }
+  }
+}
+function setSpeed(n){ S.speed = n; DIRTY.kpi = true; if(activeTab === "settings") buildSettings(); }
+
+/* -------------------------------- modals ------------------------------- */
+function closeModal(){ $("modalRoot").innerHTML = ""; }
+function showNewBank(){
+  let diff = "denovo";
+  const root = $("modalRoot");
+  root.innerHTML = `<div class="scrim"><div class="modal">
+    <div class="mh"><h2>Charter a bank</h2>
+      <p>You set the rates, write the underwriting policy, and answer for the balance sheet.
+         There is no win condition — only how long you last and how large you get.</p></div>
+    <div class="mb">
+      <label class="field"><span>Bank name</span><input type="text" id="nbName" value="${esc(pick(["Meridian Savings","Harbor Point Bank","Cedar Union Trust","Ironvale Bank","Northgate Savings","Kestrel Financial","Blackwater Trust","Alderman Bank"]))}"></label>
+      <div style="font-size:11px;color:var(--text-2);margin:10px 0 2px">Opening position</div>
+      <div class="diffopts" id="nbDiff">
+        ${Object.values(DIFFICULTIES).map(d=>`<div class="diffopt${d.key===diff?" sel":""}" data-d="${d.key}">
+          <div class="dt"><span>${d.name}</span></div>
+          <div class="dd">${d.note}</div>
+          <div class="dn">${fmtMoney(d.capital)} capital · ${fmtMoney(d.deposits)} deposits · reputation ${d.rep}</div>
+        </div>`).join("")}
+      </div>
+      <div class="hint" style="margin-top:10px">Reserve ratio must stay at or above ${pct(CFG.REQ_RESERVE,0)} and the
+        capital ratio at or above ${pct(CFG.REQ_CAPITAL,0)}. Breach either for long enough and you lose the bank.</div>
+    </div>
+    <div class="mf"><button class="btn primary" id="nbStart">Open for business</button></div>
+  </div></div>`;
+  root.querySelector("#nbDiff").addEventListener("click", e => {
+    const o = e.target.closest("[data-d]"); if(!o) return;
+    diff = o.dataset.d;
+    for(const c of root.querySelectorAll(".diffopt")) c.classList.toggle("sel", c.dataset.d === diff);
+  });
+  root.querySelector("#nbStart").onclick = () => {
+    newGame(root.querySelector("#nbName").value.trim() || "Reserve Trust", diff);
+    closeModal();
+    PF.page = 0; counterOpen = null;
+    setTab("overview");
+    saveGame();
+    setSpeed(1);
+  };
+}
+function showGameOver(){
+  const o = S.over, m = M();
+  const yrs = (o.day/(CFG.DAYS_PER_MONTH*CFG.MONTHS_PER_YEAR));
+  $("modalRoot").innerHTML = `<div class="scrim"><div class="modal">
+    <div class="mh"><h2>${esc(S.bankName)} has failed</h2>
+      <p>${fmtDate(o.day)} — ${o.day} days after the charter was granted (${yrs.toFixed(1)} years).</p></div>
+    <div class="mb">
+      <div class="cause"><div class="ct">${esc(o.cause)}</div><div class="cd">${esc(o.detail)}</div></div>
+      <div class="gostats">
+        <div class="gostat"><div class="k">Days survived</div><div class="v">${o.day}</div></div>
+        <div class="gostat"><div class="k">Peak total assets</div><div class="v">${fmtCompact(o.peakAssets)}</div></div>
+        <div class="gostat"><div class="k">Peak equity</div><div class="v">${fmtCompact(o.peakEquity)}</div></div>
+        <div class="gostat"><div class="k">Final equity</div><div class="v">${fmtCompact(o.equity)}</div></div>
+        <div class="gostat"><div class="k">Customers served</div><div class="v">${S.stats.customersServed.toLocaleString("en-US")}</div></div>
+        <div class="gostat"><div class="k">Applications seen</div><div class="v">${S.stats.appsReceived.toLocaleString("en-US")}</div></div>
+        <div class="gostat"><div class="k">Lifetime interest income</div><div class="v">${fmtCompact(S.stats.lifetimeInterest)}</div></div>
+        <div class="gostat"><div class="k">Lifetime charge-offs</div><div class="v">${fmtCompact(S.stats.chargeOffAmt)}</div></div>
+        <div class="gostat"><div class="k">Lifetime net income</div><div class="v">${fmtCompact(netIncomeOf(S.is.life))}</div></div>
+        <div class="gostat"><div class="k">Largest size reached</div><div class="v">${sizeTier(o.peakAssets)}</div></div>
+      </div>
+      <div class="hint" style="margin-top:10px">The failed bank stays on screen behind this dialog if you want to
+        read the financials before starting over.</div>
+    </div>
+    <div class="mf">
+      <button class="btn" id="goClose">Review the wreckage</button>
+      <button class="btn primary" id="goNew">Charter a new bank</button>
+    </div>
+  </div></div>`;
+  $("goClose").onclick = closeModal;
+  $("goNew").onclick = () => { clearSave(); showNewBank(); };
+}
+
+/* ------------------------------- wiring -------------------------------- */
+function wire(){
+  $("tabNav").addEventListener("click", e => {
+    const b = e.target.closest("button[data-tab]"); if(b) setTab(b.dataset.tab);
+  });
+  $("speedCtl").addEventListener("click", e => {
+    const b = e.target.closest("button[data-speed]"); if(b) setSpeed(+b.dataset.speed);
+  });
+  $("themeBtn").addEventListener("click", () => {
+    const cur = document.documentElement.dataset.theme;
+    const next = cur === "auto" ? "light" : cur === "light" ? "dark" : "auto";
+    document.documentElement.dataset.theme = next;
+    try{ localStorage.setItem("reserve.theme", next); }catch(e){}
+    $("themeBtn").title = "Theme: " + next;
+    if(activeTab === "financials") drawCharts();
+  });
+
+  for(const id of ["appFilterProduct","appSort"])
+    $(id).addEventListener("change", () => { counterOpen = null; renderApplications(); });
+  $("appDenyAll").addEventListener("click", () => {
+    if(!S.apps.length) return;
+    if(!confirm(`Deny all ${S.apps.length} applications in the queue?`)) return;
+    const list = S.apps.slice(); S.apps = [];
+    for(const a of list) decide(a, "deny", { reason:"batch declined" });
+    counterOpen = null; renderApplications(); renderDecisions(); DIRTY.overview = true;
+  });
+
+  for(const id of ["pfSearch","pfType","pfProduct","pfStatus"])
+    $(id).addEventListener("input", () => { PF.page = 0; renderPortfolio(); });
+  $("pfHead").addEventListener("click", e => {
+    const th = e.target.closest("th[data-k]"); if(!th) return;
+    if(PF.sort === th.dataset.k) PF.dir = -PF.dir; else { PF.sort = th.dataset.k; PF.dir = -1; }
+    renderPortfolio();
+  });
+  $("pfPager").addEventListener("click", e => {
+    const b = e.target.closest("button[data-pg]"); if(!b) return;
+    PF.page += +b.dataset.pg; renderPortfolio();
+  });
+  $("finISPeriod").addEventListener("change", buildFinancials);
+
+  const main = $("main");
+  main.addEventListener("change", e => {
+    if(e.target.matches("input[data-bind],select[data-bind]")) handleBind(e);
+  });
+  main.addEventListener("input", e => {
+    if(e.target.matches("input[type=range][data-bind]")){
+      const el = e.target;
+      let v = parseFloat(el.value);
+      setPath(S, el.dataset.bind, el.dataset.scale ? v*+el.dataset.scale : v);
+      if(el.dataset.bind === "marketing.budget"){
+        const lab = el.parentElement.querySelector(".hint b");
+        if(lab) lab.textContent = fmtMoney(S.marketing.budget);
+      }
+    }
+  });
+  main.addEventListener("click", e => {
+    const sp = e.target.closest("[data-speed2]");
+    if(sp){ setSpeed(+sp.dataset.speed2); return; }
+    if(e.target.id === "btnAudit"){ refreshDev(); return; }
+    if(e.target.id === "btnSaveNow"){ saveGame(); toast("Saved", "Game state written to browser storage.", "ok"); buildSettings(); return; }
+    if(e.target.id === "btnExport"){
+      const blob = new Blob([JSON.stringify(packState(false))], { type:"application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `reserve-${S.bankName.replace(/\W+/g,"-").toLowerCase()}-day${S.day}.json`;
+      a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+      return;
+    }
+    if(e.target.id === "btnImport"){ $("fileImport").click(); return; }
+    if(e.target.id === "btnReset"){
+      if(confirm("Abandon this bank and start a new one? The current save is deleted.")){
+        clearSave(); showNewBank();
+      }
+      return;
+    }
+  });
+  main.addEventListener("change", e => {
+    if(e.target.id === "setPauseBlur"){ S.pauseOnBlur = e.target.checked; saveGame(); }
+    if(e.target.id === "fileImport" && e.target.files[0]){
+      const fr = new FileReader();
+      fr.onload = () => {
+        try{
+          if(!adoptState(JSON.parse(fr.result))) throw new Error("bad save");
+          setTab("overview"); saveGame();
+          toast("Save loaded", `${S.bankName}, day ${S.day}.`, "ok");
+        }catch(err){ toast("Import failed", "That file is not a Reserve save.", "bad"); }
+      };
+      fr.readAsText(e.target.files[0]);
+    }
+  });
+
+  document.addEventListener("keydown", e => {
+    if(/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+    if(e.code === "Space"){ e.preventDefault(); setSpeed(S.speed === 0 ? 1 : 0); }
+    else if(e.key === "1") setSpeed(1);
+    else if(e.key === "2") setSpeed(4);
+    else if(e.key === "3") setSpeed(15);
+  });
+  document.addEventListener("visibilitychange", () => {
+    if(document.hidden){ saveGame(); if(S && S.pauseOnBlur !== false) setSpeed(0); }
+  });
+  window.addEventListener("beforeunload", () => { if(S) saveGame(); });
+  window.addEventListener("resize", () => { if(activeTab === "financials") drawCharts(); });
+}
+
+/* --------------------------------- boot -------------------------------- */
+(function boot(){
+  try{
+    const th = localStorage.getItem("reserve.theme");
+    if(th) document.documentElement.dataset.theme = th;
+  }catch(e){}
+  wire();
+  if(loadGame()){
+    setTab("overview");
+    toast("Welcome back", `${S.bankName}, ${fmtDate(S.day)}. Resumed paused — press space or 1× to continue.`, "ok");
+  } else {
+    newGame("Reserve Trust", "denovo");   // placeholder so the UI has state behind the dialog
+    S.speed = 0;
+    setTab("overview");
+    showNewBank();
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

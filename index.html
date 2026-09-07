@@ -487,14 +487,17 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
     <section class="tabpanel" data-panel="treasury">
       <div class="grid g2" style="margin-bottom:12px">
         <div class="card"><h3>Capital position</h3><div class="body" id="trPosition"></div></div>
-        <div class="card"><h3>Raise equity</h3><div class="body" id="trRaise"></div></div>
+        <div class="card"><h3>Investment securities</h3><div class="body" id="trSecurities"></div></div>
       </div>
       <div class="grid g2" style="margin-bottom:12px">
+        <div class="card"><h3>Raise equity</h3><div class="body" id="trRaise"></div></div>
         <div class="card"><h3>Subordinated notes · Tier 2</h3><div class="body" id="trSub"></div></div>
-        <div class="card"><h3>Dividends</h3><div class="body" id="trDiv"></div></div>
       </div>
-      <div class="grid g2">
+      <div class="grid g2" style="margin-bottom:12px">
+        <div class="card"><h3>Dividends</h3><div class="body" id="trDiv"></div></div>
         <div class="card"><h3>Credit line management</h3><div class="body" id="trLines"></div></div>
+      </div>
+      <div class="grid">
         <div class="card"><h3>Loan portfolio sale</h3><div class="body" id="trSale"></div></div>
       </div>
     </section>
@@ -589,6 +592,11 @@ const CFG = {
   SUB_SPREAD: 3.0,           // over the policy rate, for a healthy issuer
   LINE_CUT_CLOSE: 0.08,      // share of cardholders who close after a line cut
   SALE_BASE_DISCOUNT: 0.015, // buyer's margin on a loan portfolio sale
+  SEC_DURATION: 4.0,         // years; how hard a rate move marks the securities book
+  SEC_SELL_SPREAD: 0.001,    // bid/ask on an orderly securities sale
+  SUB_CALL_PROTECT: 5,       // years of call protection on subordinated notes
+  SUB_CALL_PREMIUM: 0.02,    // premium to call at or after the call date
+  SUB_CALL_STEP: 0.015,      // extra premium per year of remaining call protection
 
   // risk weights for the capital ratio
   RW: { cash:0, securities:0.20, mortgage:0.50, auto:0.50, personal:1.00, card:1.00 },
@@ -778,7 +786,8 @@ function newGame(bankName, diffKey){
 
     // general ledger
     gl: { cash: diff.capital + diff.deposits, securities: 0, grossLoans: 0,
-          allowance: 0, deposits: diff.deposits, subDebt: 0, paidIn: diff.capital, retained: 0 },
+          allowance: 0, deposits: diff.deposits, subDebt: 0, secBookYield: 0,
+          paidIn: diff.capital, retained: 0 },
     capital: blankCapital(),
 
     loans: [], depAccts: [], apps: [],
@@ -1195,12 +1204,13 @@ function ensureCash(amount){
   if(S.gl.cash >= amount) return true;
   if(S.gl.securities > 0){
     const need = amount - S.gl.cash;
-    const sell = Math.min(S.gl.securities, need/(1 - CFG.SECURITIES_HAIRCUT));
-    const proceeds = sell*(1 - CFG.SECURITIES_HAIRCUT);
-    const loss = sell - proceeds;
-    post({ securities:-sell, cash:proceeds, retained:-loss }, "securities-sale");
-    acc("opex", loss);
-    if(loss > 500) logEvent(`Sold ${fmtMoney(sell)} of securities to raise cash — ${fmtMoney(loss)} fire-sale loss.`, "warn");
+    const px = secMark()*(1 - CFG.SECURITIES_HAIRCUT);   // marked, then hit for the fire sale
+    const sell = Math.min(S.gl.securities, need/px);
+    const proceeds = sell*px;
+    const pl = proceeds - sell;
+    post({ securities:-sell, cash:proceeds, retained:pl }, "securities-sale");
+    acc("gainSale", pl);
+    if(pl < -500) logEvent(`Sold ${fmtMoney(sell)} of securities under pressure — ${fmtMoney(-pl)} realised loss.`, "warn");
   }
   return S.gl.cash >= amount - 0.01;
 }
@@ -1379,7 +1389,51 @@ function closeDepositAccount(d, why){
   return true;
 }
 
-/* ============================== treasury =============================== */
+/* ============================== treasury ===============================
+   Securities carry at amortised cost but are worth what the market will pay.
+   A bond bought at 3% is worth less once new bonds yield 5%, and selling is
+   what turns that paper loss into a real one — the whole reason a bank can be
+   solvent on paper and dead the moment it needs the cash.
+   ===================================================================== */
+function secMarketYield(){ return Math.max(0.2, S.macro.rate - 0.5); }
+function secMark(){
+  if(S.gl.securities <= 0) return 1;
+  const gap = (secMarketYield() - (S.gl.secBookYield || secMarketYield()))/100;
+  return clamp(1 - gap*CFG.SEC_DURATION, 0.55, 1.25);
+}
+function secUnrealized(){ return S.gl.securities*(secMark() - 1); }
+function addSecurities(amount){          // blend the purchase into the book yield
+  const g = S.gl, y = secMarketYield();
+  const base = g.securities > 0 ? (g.secBookYield || y) : y;
+  g.secBookYield = (g.securities*base + amount*y)/(g.securities + amount);
+  post({ cash:-amount, securities:amount }, "securities-buy");
+}
+function buySecurities(amount){
+  if(S.over) return false;
+  const m = M(), L = limits(false);
+  const room = Math.max(0, m.cash - L.rr*m.deposits);
+  amount = Math.round(clamp(amount, 0, room));
+  if(amount < 1000) return false;
+  addSecurities(amount);
+  logEvent(`Bought ${fmtMoney(amount)} of securities at ${rate(secMarketYield())}.`, "info");
+  bumpAll(); saveGame();
+  return true;
+}
+function sellSecurities(amount){
+  if(S.over) return false;
+  amount = Math.round(clamp(amount, 0, S.gl.securities));
+  if(amount < 1000) return false;
+  const px = secMark()*(1 - CFG.SEC_SELL_SPREAD);
+  const proceeds = amount*px, pl = proceeds - amount;
+  post({ securities:-amount, cash:proceeds, retained:pl }, "securities-sell");
+  acc("gainSale", pl);
+  logEvent(`Sold ${fmtMoney(amount)} of securities for ${fmtMoney(proceeds)} — realised ${pl>=0?"gain":"loss"} of ${fmtMoney(Math.abs(pl))}.`,
+           pl >= 0 ? "ok" : "warn");
+  toast("Securities sold", `${fmtMoney(proceeds)} into cash. Reserve ratio now ${pct(M().rr)}.`, pl >= 0 ? "ok" : "warn");
+  bumpAll(); saveGame();
+  return true;
+}
+
 function treasuryOps(){
   const m = M();
   // unwind securities if liquidity is getting thin
@@ -1388,11 +1442,11 @@ function treasuryOps(){
     if(want > 0) ensureCash(m.cash + want);
   } else if(S.policy.sweep){
     const excess = m.cash - S.gl.deposits*S.policy.sweepBuffer;
-    if(excess > 25000) post({ cash:-excess, securities:excess }, "sweep");
+    if(excess > 25000) addSecurities(excess);
   }
   if(S.gl.securities > 0){
-    const y = Math.max(0.2, S.macro.rate - 0.5);
-    const si = S.gl.securities*y/1200;
+    // the coupon is whatever the book was bought at, not today's rate
+    const si = S.gl.securities*(S.gl.secBookYield || secMarketYield())/1200;
     income("intSec", si, { cash:si, retained:si }, "securities-interest");
   }
 }
@@ -1560,6 +1614,41 @@ function issueSubDebt(amount){
   S.capital.tranches.push({ amount, rate: t.rate, matures: S.day + CFG.SUB_TERM*360, issued: S.day });
   logEvent(`Issued ${fmtMoney(amount)} of ${CFG.SUB_TERM}-year subordinated notes at ${rate(t.rate)}.`, "info");
   toast("Notes issued", `${fmtMoney(amount)} of Tier 2 capital at ${rate(t.rate)}. Capital ratio now ${pct(M().car)}.`, "ok");
+  bumpAll(); saveGame();
+  return true;
+}
+
+function callQuote(i){
+  const t = S.capital.tranches[i];
+  if(!t) return null;
+  const yearsLeft = Math.max(0, (t.matures - S.day)/360);
+  const protectLeft = Math.max(0, yearsLeft - (CFG.SUB_TERM - CFG.SUB_CALL_PROTECT));
+  const premRate = clamp(CFG.SUB_CALL_PREMIUM + protectLeft*CFG.SUB_CALL_STEP, CFG.SUB_CALL_PREMIUM, 0.12);
+  const premium = t.amount*premRate;
+  const cost = t.amount + premium;
+  const m = M(), L = limits(false);
+  // calling retires Tier 2, so check what the ratio looks like afterwards
+  const t1 = m.tier1 - premium;
+  const sub2 = S.gl.subDebt - t.amount;
+  const capAfter = t1 + (t1 > 0 ? Math.min(sub2, t1) : 0);
+  const carAfter = m.rwa > 0 ? capAfter/m.rwa : Infinity;
+  const rrAfter = m.deposits > 0 ? (m.cash - cost)/m.deposits : Infinity;
+  const reasons = [];
+  if(m.cash < cost) reasons.push("not enough cash");
+  if(carAfter < CFG.REQ_CAPITAL) reasons.push(`capital ratio would fall to ${pct(carAfter)}`);
+  if(rrAfter < CFG.REQ_RESERVE) reasons.push(`reserve ratio would fall to ${pct(rrAfter)}`);
+  return { t, yearsLeft, protectLeft, premRate, premium, cost, carAfter, rrAfter,
+           annualCoupon: t.amount*t.rate/100, ok: reasons.length === 0, why: reasons.join("; ") };
+}
+function callSubDebt(i){
+  if(S.over) return false;
+  const q = callQuote(i);
+  if(!q || !q.ok) return false;
+  post({ cash:-q.cost, subDebt:-q.t.amount, retained:-q.premium }, "sub-debt-call");
+  acc("opex", q.premium);
+  S.capital.tranches.splice(i, 1);
+  logEvent(`Called ${fmtMoney(q.t.amount)} of ${rate(q.t.rate)} subordinated notes early — ${fmtMoney(q.premium)} call premium, saving ${fmtMoney(q.annualCoupon)} a year.`, "ok");
+  toast("Notes called", `${fmtMoney(q.annualCoupon)}/yr of coupon retired. Capital ratio now ${pct(M().car)}.`, "ok");
   bumpAll(); saveGame();
   return true;
 }
@@ -1986,6 +2075,9 @@ function saveGame(){
 // Saves predate the capital-actions update; fill in anything they lack.
 function migrate(o){
   o.gl.subDebt = o.gl.subDebt || 0;
+  // securities predate the book-yield model: mark them at today's yield, so an
+  // existing holding starts with neither a gain nor a loss
+  if(o.gl.secBookYield == null) o.gl.secBookYield = Math.max(0.2, (o.macro ? o.macro.rate : 4) - 0.5);
   const bc = blankCapital();
   if(!o.capital) o.capital = bc;
   else for(const k in bc) if(o.capital[k] === undefined) o.capital[k] = bc[k];
@@ -2225,6 +2317,9 @@ function renderOverview(){
   else if(m.rr < CFG.REQ_RESERVE*1.25) A.push(["warn","▼",`Reserve ratio ${pct(m.rr)} leaves little liquidity buffer.`]);
   if(m.nplRate > 0.05) A.push(["bad","▲",`Non-performing loans are ${pct(m.nplRate)} of the book. Charge-offs are coming — check the allowance.`]);
   else if(m.delinqRate > 0.06) A.push(["warn","▲",`Delinquencies at ${pct(m.delinqRate)} of the book and rising.`]);
+  const unrealOv = secUnrealized();
+  if(unrealOv < 0 && -unrealOv > 0.10*Math.max(1, m.equity))
+    A.push(["bad","▼",`Your securities book is <b>${fmtMoney(-unrealOv)}</b> underwater — ${pct(-unrealOv/m.equity)} of equity. It is only a paper loss until you need the cash.`]);
   if(S.macro.econ === "recession") A.push(["warn","~",`Recession: default probabilities run at ${CFG.MACRO_PD.recession}× base. Tighten policy or price for it.`]);
   if(S.apps.length >= CFG.QUEUE_CAP*0.6) A.push(["warn","≡",`${S.apps.length} applications waiting. Unreviewed files walk away after ${CFG.APP_TTL} days and cost reputation.`]);
   if(netIncomeOf(S.is.last) < 0 && S.history.length>1) A.push(["warn","−",`The bank lost ${fmtMoney(-netIncomeOf(S.is.last))} last month. Persistent losses erode equity and the capital ratio.`]);
@@ -2815,6 +2910,40 @@ function buildTreasury(){
     `<div class="hint">Capital only grows three ways: retained earnings, an equity raise, and Tier 2 notes.
       It shrinks when you lose money, pay a dividend, or add risk-weighted assets.</div>`);
 
+  const mark = secMark(), unreal = secUnrealized();
+  const secRoom = Math.max(0, m.cash - L.rr*m.deposits);
+  setHTML("trSecurities",
+    `<div class="hint" style="margin-bottom:9px">Securities pay whatever yield you bought them at, carry a
+      ${pct(CFG.RW.securities,0)} risk weight — and are <b>not cash</b> for the reserve ratio. Buying them converts
+      lending capacity into a coupon; selling them converts it back, at whatever the market will pay today.</div>` +
+    row("Holdings (at cost)", fmtMoney(S.gl.securities,0)) +
+    row("Book yield", S.gl.securities > 0 ? rate(S.gl.secBookYield || secMarketYield()) : "—") +
+    row("Market yield today", rate(secMarketYield())) +
+    row("Mark", (mark*100).toFixed(1) + " per 100", mark < 0.995 ? "bad" : mark > 1.005 ? "good" : "") +
+    row("Unrealised gain / loss", fmtMoney(unreal,0), sign(unreal)) +
+    row("Value if sold now", fmtMoney(S.gl.securities*mark*(1-CFG.SEC_SELL_SPREAD),0)) +
+    (Math.abs(unreal) > 1000
+      ? `<div class="alert ${unreal<0?"warn":"ok"}" style="margin-top:8px"><span class="ic">${unreal<0?"▼":"▲"}</span><span>${
+          unreal < 0
+           ? `Rates have risen since you bought. Selling realises a <b>${fmtMoney(-unreal)}</b> loss — it is a real loss the moment you need the cash.`
+           : `Rates have fallen since you bought, so the book is worth <b>${fmtMoney(unreal)}</b> more than cost.`}</span></div>`
+      : "") +
+    `<div style="display:flex;gap:7px;align-items:flex-end;margin-top:10px">
+      <label class="field" style="flex:1;margin:0"><span>Buy — cash above your ${pct(L.rr,0)} limit: ${fmtCompact(secRoom)}</span>
+        <input type="number" id="trSecBuy" step="10000" min="0" max="${Math.floor(secRoom)}" value="0"></label>
+      <button class="btn" id="btnSecBuy" ${secRoom >= 1000 ? "" : "disabled"}>Buy</button>
+    </div>
+    <div style="display:flex;gap:7px;align-items:flex-end;margin-top:7px">
+      <label class="field" style="flex:1;margin:0"><span>Sell — holdings: ${fmtCompact(S.gl.securities)}</span>
+        <input type="number" id="trSecSell" step="10000" min="0" max="${Math.floor(S.gl.securities)}" value="${Math.floor(S.gl.securities)}"></label>
+      <button class="btn" id="btnSecSell" ${S.gl.securities >= 1000 ? "" : "disabled"}>Sell</button>
+    </div>` +
+    (S.policy.sweep
+      ? `<div class="hint" style="color:var(--warn);margin-top:8px">The automatic sweep is <b>on</b>: at each month-end
+          any cash above ${pct(S.policy.sweepBuffer,0)} of deposits is bought into securities. Selling now will be
+          undone at the next close unless you switch it off in Rates &amp; Policy.</div>`
+      : ""));
+
   const rc = raiseCapacity();
   const suggest = (max) => {
     const want = needCap > 0 ? Math.ceil(needCap/25000)*25000 : Math.round(max/2/25000)*25000;
@@ -2851,8 +2980,19 @@ function buildTreasury(){
         st.distress ? "warn" : "") +
     row("Annual coupon cost if fully drawn", fmtMoney(st.max*st.rate/100, 0), "muted") +
     (S.capital.tranches.length
-      ? `<div class="rule"></div>` + S.capital.tranches.map(t =>
-          row(`${fmtCompact(t.amount)} at ${rate(t.rate)}`, "matures " + fmtDate(t.matures), "muted", true)).join("")
+      ? `<div class="rule"></div><div style="font-size:11px;color:var(--text-2);margin-bottom:4px">Outstanding tranches — callable early at a premium</div>` +
+        S.capital.tranches.map((t, i) => {
+          const q = callQuote(i);
+          return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--line)">
+            <span style="flex:1;font-size:12px">${fmtCompact(t.amount)} at ${rate(t.rate)}
+              <span class="dim">· ${fmtMoney(q.annualCoupon,0)}/yr · matures ${fmtDate(t.matures)}</span></span>
+            <span class="num dim" style="font-size:11px">call ${fmtCompact(q.cost)} (+${pct(q.premRate,1)})</span>
+            <button class="btn sm" data-call="${i}" ${q.ok?"":"disabled"} title="${q.ok?"":esc(q.why)}">Call</button>
+          </div>`;
+        }).join("") +
+        `<div class="hint" style="margin-top:6px">Call protection runs ${CFG.SUB_CALL_PROTECT} years; before then the
+          premium steps up by ${pct(CFG.SUB_CALL_STEP,1)} for every year of protection left. Calling retires Tier 2
+          capital, so the ratio falls the moment you do it.</div>`
       : "") +
     `<div style="display:flex;gap:7px;align-items:flex-end;margin-top:10px">
       <label class="field" style="flex:1;margin:0"><span>Issue amount</span>
@@ -2981,7 +3121,7 @@ function buildFinancials(){
     row("Card annual fees", fmtMoney(is.feeAnnual,0), null, true) +
     row("Interchange", fmtMoney(is.feeInterchange,0), null, true) +
     row("Deposit service charges", fmtMoney(is.feeService,0), null, true) +
-    row("Net gain (loss) on loan sales", fmtMoney(is.gainSale,0), sign(is.gainSale), true) +
+    row("Net gain (loss) on asset sales", fmtMoney(is.gainSale,0), sign(is.gainSale), true) +
     row("Total fee income", fmtMoney(fees,0)) +
     headRow("Non-interest expense") +
     row("Operating expense", "("+fmtMoney(is.opex,0)+")", null, true) +
@@ -3357,7 +3497,27 @@ function wire(){
     }
   });
   main.addEventListener("click", e => {
+    const callBtn = e.target.closest("button[data-call]");
+    if(callBtn && !S.over){
+      const i = +callBtn.dataset.call, q = callQuote(i);
+      if(q && q.ok && confirm(`Call ${fmtMoney(q.t.amount)} of ${rate(q.t.rate)} notes for ${fmtMoney(q.cost)}? The ${fmtMoney(q.premium)} premium is an expense, and you retire ${fmtMoney(q.annualCoupon)} a year of coupon.`))
+        callSubDebt(i);
+      buildTreasury();
+      return;
+    }
     const id = e.target.id;
+    if(id === "btnSecBuy" || id === "btnSecSell"){
+      if(S.over) return;
+      if(id === "btnSecBuy") buySecurities(+$("trSecBuy").value);
+      else {
+        const amt = +$("trSecSell").value, u = secUnrealized(), mk = secMark();
+        const pl = amt*(mk*(1-CFG.SEC_SELL_SPREAD) - 1);
+        if(confirm(`Sell ${fmtMoney(amt)} of securities? That realises a ${pl>=0?"gain":"loss"} of ${fmtMoney(Math.abs(pl))} and moves the proceeds into cash.`))
+          sellSecurities(amt);
+      }
+      buildTreasury();
+      return;
+    }
     if(id === "btnRaise" || id === "btnSub" || id === "btnDiv" || id === "btnLines" || id === "btnSale"){
       if(S.over) return;
       if(id === "btnRaise") raiseEquity(+$("trRaiseAmt").value);

@@ -116,6 +116,27 @@ discount that widens with the credit risk of the paper and with a recession. You
 assets immediately and hand over every dollar of future interest. Selling cards transfers their undrawn
 commitments too.
 
+**Call the notes early.** Subordinated notes can be redeemed before maturity at a premium: 2% at or after
+the five-year call date, stepping up 1.5% for every year of call protection still to run. Calling retires
+Tier 2 capital, so the ratio drops the moment you do it — and the call is refused if that would put you
+under a regulatory minimum.
+
+### Investment securities are a real position, not a parking space
+
+Securities pay the yield they were **bought** at, carry a 20% risk weight, and are not cash for the
+reserve ratio. Buy and sell them by hand on the Treasury tab, or leave the automatic sweep to do it.
+
+The book is marked to market against a four-year duration: buy at 3%, watch rates go to 5%, and the book
+is worth about 92 cents on the dollar. That loss is unrealised — right up until you need the cash and
+have to sell, which is precisely when it becomes real. The Treasury card shows the mark and the
+unrealised figure, and the overview raises an alert once the hole passes 10% of equity. It is entirely
+possible to be solvent on the balance sheet and dead the moment there is a run.
+
+A note on the sweep's **cash buffer**: it is the cash you *keep*, expressed as a share of deposits.
+Anything above it is bought into securities at each month-end. A high buffer therefore sweeps *less*, not
+more — set it to 89% and effectively nothing is ever swept. It also never sells what you already hold;
+only a manual sale or a liquidity squeeze does that.
+
 ## The loop
 
 1. Applicants arrive daily — deposit accounts most often, then cards, personal loans, auto loans,
@@ -183,6 +204,8 @@ first. Saves can be exported and imported as JSON from **Settings**.
 * One representative applicant per file; no household or joint underwriting.
 * An equity raise has no share count behind it, so dilution is not modelled; the cost is the placement
   fee and the terms you get when you are desperate.
+* Securities are one undifferentiated portfolio with a single blended book yield and a fixed four-year
+  duration; there is no maturity ladder and no held-to-maturity versus available-for-sale distinction.
 
 ### Out of scope for v1
 

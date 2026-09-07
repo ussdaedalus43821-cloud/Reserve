@@ -81,7 +81,11 @@ balance. Term borrowers amortise, and prepay early when your rate has drifted ab
 
 ### The market pushes back
 
-Every rate you set is compared against a drifting market rate (mean-reverting, 1%–9%). Price a loan
+Every rate you set is compared against a market policy rate (mean-reverting, 1%–9%) that is **re-set once
+a year** by default, so a rate sheet stays good for a while and repricing is a scheduled decision rather
+than a monthly chore. The interval is settable (yearly / half-yearly / quarterly / monthly) under
+Settings; each move is scaled to the interval so the long-run distribution of the rate is the same
+whichever you pick. Price a loan
 above market and approved applicants decline your offer; price below market and you win volume but
 thin the spread. Pay under market on deposits and accounts attrit to competitors. CD money is
 locked until maturity — the most expensive funding, and the only funding that cannot run.
@@ -201,6 +205,21 @@ lifetime interest income, lifetime charge-offs, cause of failure — and a new c
 | De novo (tight) | $2.0M | $1.0M | 50 |
 | Comfortable | $5.0M | $10.0M | 58 |
 | Undercapitalised (hard) | $1.2M | $0.5M | 38 |
+
+## Playing on a phone
+
+The repository is public and `index.html` sits at its root, so GitHub Pages will serve it as a website
+with no build step: **Settings → Pages → Source: Deploy from a branch → `/ (root)` → Save**. A minute
+later the game is at `https://<user>.github.io/Reserve/`.
+
+On iOS, open that URL in Safari and use **Share → Add to Home Screen**; the page declares the standalone
+meta tags and carries its own icon, so it launches full-screen without browser chrome. The layout adapts
+below 760px: the metric strip becomes one swipeable row, tabs and tables scroll horizontally, touch
+targets grow, and inputs render at 16px so iOS does not zoom in every time you tap a field.
+
+Saves live in `localStorage`, which is per-origin and per-device — a bank started on a laptop will not
+appear on a phone. Move one across with **Settings → Export save**, then **Import save** on the other
+device.
 
 ## Controls
 

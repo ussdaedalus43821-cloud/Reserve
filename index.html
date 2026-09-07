@@ -2,8 +2,18 @@
 <html lang="en" data-theme="auto">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Reserve — Bank Operator Simulation</title>
+<meta name="description" content="Run a bank: set the rates, write the underwriting policy, answer for the balance sheet.">
+<!-- installable to a phone home screen straight from a static host -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Reserve">
+<meta name="theme-color" content="#eef1f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
+<link rel="apple-touch-icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAABnklEQVR42u3bMQ0AIRBEUQxcQYWok4AXlGAHT5QYuOoKmnnJV7B51SZTntqkz4oTCA7BITgEh+AQHIJDcAgOwSHBITgEh+AQHIJDcAgOwSE4JDgEh+AQHIJDcAgOwSE4BIcEh+AQHIJDcAgOwSE4BIfgEBwSHIJDcAgOwSE4BIfgEByC40LvGvoRHIJDcMABBxxwwAEHHHDAAQcccMABBxxwwCE4BAcccMABBxxwwAEHHHDAAQcccMABBxzKwiHTBMEhOASHBIfgEByCQ3AoF0efOzY44IADDjjggAMOOOCAAw444IADDjjggAMOOOCAAw444IADDjjggAMOOOCAAw444IADDjjggAMOOGSaIDgkOASH4BAcgkNwCA7BkfE+hwMOOOCAAw444IADDjjggAMOOOCAAw444IADDjjggAMOOOCAAw444IADDjjggAMOOOCAAw444IBDgkNwCA7BITgEh+AQHIJDcAgOCQ7BITgEh+AQHIJDcAgOwSHBITgEh+AQHIJDcAgOwSE4JDgEh+AQHIJDcAgOwSE4BIfCO5WWhG1qFdtFAAAAAElFTkSuQmCC">
+<link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAABnklEQVR42u3bMQ0AIRBEUQxcQYWok4AXlGAHT5QYuOoKmnnJV7B51SZTntqkz4oTCA7BITgEh+AQHIJDcAgOwSHBITgEh+AQHIJDcAgOwSE4JDgEh+AQHIJDcAgOwSE4BIcEh+AQHIJDcAgOwSE4BIfgEBwSHIJDcAgOwSE4BIfgEByC40LvGvoRHIJDcMABBxxwwAEHHHDAAQcccMABBxxwwCE4BAcccMABBxxwwAEHHHDAAQcccMABBxzKwiHTBMEhOASHBIfgEByCQ3AoF0efOzY44IADDjjggAMOOOCAAw444IADDjjggAMOOOCAAw444IADDjjggAMOOOCAAw444IADDjjggAMOOGSaIDgkOASH4BAcgkNwCA7BkfE+hwMOOOCAAw444IADDjjggAMOOOCAAw444IADDjjggAMOOOCAAw444IADDjjggAMOOOCAAw444IBDgkNwCA7BITgEh+AQHIJDcAgOCQ7BITgEh+AQHIJDcAgOwSHBITgEh+AQHIJDcAgOwSE4JDgEh+AQHIJDcAgOwSE4BIfCO5WWhG1qFdtFAAAAAElFTkSuQmCC">
 <style>
 /* ============ design tokens ============ */
 :root{
@@ -50,6 +60,7 @@
 /* ============ base ============ */
 *{box-sizing:border-box}
 html,body{height:100%}
+@supports (height:100dvh){ html,body{height:100dvh} }  /* iOS: survive the collapsing toolbar */
 body{margin:0;background:var(--bg);color:var(--text);font:13px/1.45 var(--sans);
   -webkit-font-smoothing:antialiased;overflow:hidden}
 button,input,select,textarea{font:inherit;color:inherit}
@@ -61,7 +72,8 @@ h1,h2,h3,h4{margin:0;font-weight:600}
 .hidden{display:none!important}
 
 /* ============ app shell ============ */
-#app{display:flex;flex-direction:column;height:100%}
+#app{display:flex;flex-direction:column;height:100%;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
 header.topbar{background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto}
 .topbar-row{display:flex;align-items:center;gap:14px;padding:8px 14px}
 .brand{display:flex;align-items:baseline;gap:9px;min-width:0}
@@ -295,6 +307,37 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
 .logline{padding:4px 12px;border-bottom:1px solid var(--line);display:flex;gap:9px}
 .logline .lt{font-family:var(--mono);color:var(--text-3);flex:0 0 auto;font-size:11px}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+/* ---- phones and small tablets ---- */
+@media (max-width:760px){
+  .topbar-row{flex-wrap:wrap;gap:8px;padding:8px 10px}
+  .brand .bank-name{max-width:120px}
+  .clock{margin-left:auto}
+  .speeds button{padding:7px 11px}
+  .icon-btn{padding:7px 11px}
+  /* the KPI strip becomes one swipeable row rather than eight stacked blocks */
+  .kpis{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:0 10px 9px}
+  .kpi{flex:0 0 auto;min-width:98px;padding-right:12px;margin-right:12px}
+  nav.tabs{padding:0 6px}
+  nav.tabs button{padding:11px 12px;font-size:13px}
+  main{padding:10px}
+  .card .body{padding:10px}
+  .card .body.tight{padding:6px 10px 9px}
+  .appgrid{grid-template-columns:1fr}
+  .counter .crow{grid-template-columns:1fr 1fr}
+  .toolbar{gap:6px;padding:9px 10px}
+  .toolbar input[type=text]{width:100%}
+  .toolbar select{flex:1 1 auto}
+  table.data td,table.data th{padding:8px 9px}
+  .btn{padding:8px 13px}
+  .btn.sm{padding:6px 10px}
+  /* 16px keeps iOS Safari from zooming in whenever a field is focused */
+  input[type=text],input[type=number],select{font-size:16px;padding:8px 9px}
+  table.rates input{font-size:16px;padding:6px 5px}
+  #toasts{left:10px;right:10px;bottom:10px;max-width:none}
+  .modal{max-height:88vh}
+  .gostats{grid-template-columns:1fr}
+}
 </style>
 </head>
 <body>
@@ -649,6 +692,7 @@ const CFG = {
   RUN_MIN_DAYS: 10, RUN_MAX_DAYS: 20,
   SECURITIES_HAIRCUT: 0.005, // cost of a fire sale
 
+  RATE_REPRICE_MONTHS: 12,   // how often the policy rate is re-set
   MAX_HISTORY: 720, MAX_LOG: 120, MAX_DECISIONS: 60,
   PRUNE_AFTER_DAYS: 180,     // dead accounts older than this are dropped entirely
   SAVE_BUDGET: 4000000,      // bytes; past this the save sheds closed accounts
@@ -817,7 +861,8 @@ function newGame(bankName, diffKey){
       apyEmergency: 0,
     },
     marketing: { budget: 0, mix: { brand:1, deposit:1, lending:1 } },
-    macro: { rate: marketRate, econ: "normal", econMonths: 0 },
+    macro: { rate: marketRate, econ: "normal", econMonths: 0,
+             repriceMonths: CFG.RATE_REPRICE_MONTHS, monthsSinceReprice: 0 },
     rep: diff.rep,
 
     is: { mtd: blankIS(), last: blankIS(), ytd: blankIS(), life: blankIS() },
@@ -1918,8 +1963,31 @@ function gameOver(cause, detail){
 /* ============================ monthly close ============================ */
 function updateMacro(){
   const m = S.macro;
-  const target = 4.0 + (m.econ === "boom" ? 0.9 : m.econ === "recession" ? -1.1 : 0);
-  m.rate = clamp(m.rate + 0.10*(target - m.rate) + 0.28*randn(), 1.0, 9.0);
+  // The policy rate is re-set on a fixed cycle rather than drifting every month,
+  // so a rate sheet stays good for a while and repricing is an event you can plan
+  // around. One move covers the whole period, so the long-run spread is unchanged.
+  const every = Math.max(1, m.repriceMonths || CFG.RATE_REPRICE_MONTHS);
+  m.monthsSinceReprice = (m.monthsSinceReprice || 0) + 1;
+  if(m.monthsSinceReprice >= every){
+    const n = m.monthsSinceReprice;
+    m.monthsSinceReprice = 0;
+    const target = 4.0 + (m.econ === "boom" ? 0.9 : m.econ === "recession" ? -1.1 : 0);
+    const prev = m.rate;
+    // Sample the same mean-reverting process n months ahead in one step: carry the
+    // persistence forward and size the shock to the stationary variance, so the
+    // long-run distribution of the rate is identical whatever the interval.
+    const phi = Math.pow(1 - 0.10, n);
+    const sdStationary = 0.28/Math.sqrt(1 - 0.81);
+    const shock = sdStationary*Math.sqrt(1 - phi*phi);
+    m.rate = clamp(m.rate + (1 - phi)*(target - m.rate) + shock*randn(), 1.0, 9.0);
+    const move = m.rate - prev;
+    if(Math.abs(move) >= 0.05){
+      logEvent(`The policy rate has been re-set to ${rate(m.rate)} — ${move > 0 ? "up" : "down"} ${rate(Math.abs(move))}. Every market APR and deposit APY moved with it.`,
+               "info");
+      if(n >= 6) toast("Policy rate " + (move > 0 ? "raised" : "cut"),
+        `Now ${rate(m.rate)}. Your rate sheet is stale until you reprice it.`, "warn");
+    }
+  }
   const r = rnd(); const was = m.econ;
   if(m.econ === "normal"){ if(r < 0.030) m.econ = "recession"; else if(r < 0.060) m.econ = "boom"; }
   else if(m.econ === "recession"){ if(r < 0.115) m.econ = "normal"; }
@@ -2236,6 +2304,10 @@ function migrate(o){
   if(o.gl.secBookYield == null) o.gl.secBookYield = Math.max(0.2, (o.macro ? o.macro.rate : 4) - 0.5);
   o.gl.wholesale = o.gl.wholesale || 0;
   if(!o.policy.depositProducts) o.policy.depositProducts = { checking:true, savings:true, cd:true };
+  if(o.macro){
+    if(o.macro.repriceMonths == null) o.macro.repriceMonths = CFG.RATE_REPRICE_MONTHS;
+    if(o.macro.monthsSinceReprice == null) o.macro.monthsSinceReprice = 0;
+  }
   const bc = blankCapital();
   if(!o.capital) o.capital = bc;
   else for(const k in bc) if(o.capital[k] === undefined) o.capital[k] = bc[k];
@@ -2303,7 +2375,9 @@ function toast(title, desc, kind){
   $("toasts").appendChild(t);
   setTimeout(()=>{ t.style.transition="opacity .3s,transform .3s"; t.style.opacity="0";
     t.style.transform="translateX(14px)"; setTimeout(()=>t.remove(), 320); }, 6200);
-  while($("toasts").children.length > 5) $("toasts").firstChild.remove();
+  // a phone screen has room for two of these, not five
+  const cap = window.innerWidth < 760 ? 2 : 5;
+  while($("toasts").children.length > cap) $("toasts").firstChild.remove();
 }
 
 function row(label, value, cls, sub){
@@ -2460,7 +2534,10 @@ function renderOverview(){
     bar("Reputation", S.rep, 100,
         S.rep<30?"var(--bad)":S.rep<50?"var(--warn)":"var(--good)", S.rep.toFixed(1)) +
     row("Economy", `<span class="${econCls}">${econLabel}</span> · ${CFG.MACRO_PD[S.macro.econ].toFixed(2)}× losses`) +
-    row("Market policy rate", rate(S.macro.rate)) +
+    row("Market policy rate", rate(S.macro.rate) +
+        ((S.macro.repriceMonths||12) > 1
+          ? `<span class="dim"> · re-set in ${Math.max(0,(S.macro.repriceMonths||12) - (S.macro.monthsSinceReprice||0))}mo</span>`
+          : "")) +
     row("Applicant flow", arr.toFixed(1)+" / day") +
     row("In review queue", S.apps.length + (S.apps.length>=CFG.QUEUE_CAP? " (full)":"")) +
     row("Marketing", fmtMoney(S.marketing.budget)+" / mo") +
@@ -3474,6 +3551,14 @@ function buildSettings(){
     `</div>` +
     `<label class="switch"><input type="checkbox" id="setPauseBlur" ${S.pauseOnBlur!==false?"checked":""}>
       Pause when this tab is in the background</label>` +
+    `<label class="field" style="margin-top:8px"><span>Policy rate re-set</span>
+      <select id="setReprice">
+        ${[[12,"Once a year"],[6,"Every 6 months"],[3,"Every quarter"],[1,"Every month"]].map(([v,l])=>
+          `<option value="${v}"${(S.macro.repriceMonths||12)===v?" selected":""}>${l}</option>`).join("")}
+      </select>
+      <span class="hint">How often the market rate moves. Less often means your rate sheet stays good longer
+        and repricing becomes a scheduled decision rather than a monthly chore. The size of each move scales
+        with the interval, so the long-run range is the same either way.</span></label>` +
     `<div class="rule"></div>` +
     row("Bank", esc(S.bankName)) + row("Difficulty", DIFFICULTIES[S.difficulty].name) +
     row("Founded", "day 0") + row("Days survived", S.day) +
@@ -3821,6 +3906,11 @@ function wire(){
     if(e.target.id === "trDepKind"){ TR.depSaleKind = e.target.value; buildTreasury(); return; }
     if(e.target.id === "trDepShare"){ TR.depSaleShare = +e.target.value; buildTreasury(); return; }
     if(e.target.id === "setPauseBlur"){ S.pauseOnBlur = e.target.checked; saveGame(); }
+    if(e.target.id === "setReprice"){
+      S.macro.repriceMonths = +e.target.value;
+      S.macro.monthsSinceReprice = 0;
+      saveGame(); buildSettings();
+    }
     if(e.target.id === "fileImport" && e.target.files[0]){
       const fr = new FileReader();
       fr.onload = () => {

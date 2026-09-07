@@ -137,6 +137,31 @@ Anything above it is bought into securities at each month-end. A high buffer the
 more — set it to 89% and effectively nothing is ever swept. It also never sells what you already hold;
 only a manual sale or a liquidity squeeze does that.
 
+## Funding is a choice, not a given
+
+Deposits are the cheap way to fund a bank, not the only way. Three levers make the liability side a real
+decision.
+
+**Close the door.** Each deposit product — checking, savings, CDs — can be switched off on *Rates &
+Policy*. Applicants are turned away, existing accounts stay and keep earning, and the book stops
+replacing what attrits. Refusing depositors costs reputation.
+
+**Sell the book.** A buyer takes a deposit portfolio off your hands *and pays you for it*: you hand over
+the balances in cash and keep a premium, because cheap sticky money is a franchise worth owning. Checking
+fetches the most, CDs almost nothing, and every basis point you pay above market makes the book worth
+less. It is the fastest way to shrink an expensive liability side and book a gain doing it.
+
+**Borrow wholesale.** Money in size, instantly, with no branches and no marketing. It costs more than
+retail deposits, it counts in the reserve requirement exactly like a deposit — the ratio is cash over
+deposits *and* wholesale — and it rolls at maturity **only while you are well capitalised**. Breach a
+capital minimum and it does not renew: the funding walks at precisely the moment you cannot replace it,
+which is its own way to lose the bank. Tranches run 3, 6 or 12 months and can be repaid early for a
+0.5% breakage fee, and total wholesale is capped at 40% of assets.
+
+Together these make a deposit-free bank playable. Sell the whole deposit book, shut the products, and run
+on equity and wholesale money as a finance company — profitable, faster to steer, and one capital breach
+away from having no funding at all.
+
 ## The loop
 
 1. Applicants arrive daily — deposit accounts most often, then cards, personal loans, auto loans,
@@ -163,6 +188,8 @@ only a manual sale or a liquidity squeeze does that.
   barring new credit, month three seizure. Equity at or below zero is an immediate seizure with no cure
   period — subordinated debt is capital only while there is equity beneath it.
 * **Subordinated debt default** — a maturing tranche you cannot repay ends the bank.
+* **Wholesale funding withdrawn** — money that matures while you are below a capital minimum does not
+  roll, and if the cash is not there to repay it, that is the end.
 
 Either way you get a summary screen — days survived, peak assets, peak equity, customers served,
 lifetime interest income, lifetime charge-offs, cause of failure — and a new charter.
@@ -210,5 +237,4 @@ first. Saves can be exported and imported as JSON from **Settings**.
 ### Out of scope for v1
 
 Competitor banks, commercial lending, securities trading beyond a passive sweep, and multiplayer.
-Wholesale and brokered funding (fast money that flees in a crisis) and interest-rate hedging are the
-two obvious next levers.
+Interest-rate hedging is the obvious next lever.

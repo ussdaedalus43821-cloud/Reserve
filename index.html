@@ -490,6 +490,10 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
         <div class="card"><h3>Investment securities</h3><div class="body" id="trSecurities"></div></div>
       </div>
       <div class="grid g2" style="margin-bottom:12px">
+        <div class="card"><h3>Wholesale funding</h3><div class="body" id="trWhole"></div></div>
+        <div class="card"><h3>Deposit book sale</h3><div class="body" id="trDepSale"></div></div>
+      </div>
+      <div class="grid g2" style="margin-bottom:12px">
         <div class="card"><h3>Raise equity</h3><div class="body" id="trRaise"></div></div>
         <div class="card"><h3>Subordinated notes · Tier 2</h3><div class="body" id="trSub"></div></div>
       </div>
@@ -597,6 +601,14 @@ const CFG = {
   SUB_CALL_PROTECT: 5,       // years of call protection on subordinated notes
   SUB_CALL_PREMIUM: 0.02,    // premium to call at or after the call date
   SUB_CALL_STEP: 0.015,      // extra premium per year of remaining call protection
+
+  // wholesale funding — fast, expensive, and it leaves exactly when you need it
+  WHOLE_SPREAD: 0.75,        // over the policy rate for a well-capitalised bank
+  WHOLE_MAX_SHARE: 0.40,     // cap on wholesale as a share of total funding
+  WHOLE_TERMS: [3, 6, 12],   // months
+  WHOLE_BREAK_FEE: 0.005,    // to repay a tranche before maturity
+  // premium a buyer pays for a core deposit franchise, by product
+  DEP_PREMIUM: { checking: 0.060, savings: 0.030, cd: 0.005 },
 
   // risk weights for the capital ratio
   RW: { cash:0, securities:0.20, mortgage:0.50, auto:0.50, personal:1.00, card:1.00 },
@@ -748,15 +760,16 @@ function randomName(){ return pick(FIRST)+" "+pick(LAST); }
 let S = null;
 let LEDGER_ERRORS = [];
 
-const IS_LINES = ["intLoans","intSec","intDep","intSub","provision","feeOrig","feeLate","feeAnnual",
+const IS_LINES = ["intLoans","intSec","intDep","intSub","intWhole","provision","feeOrig","feeLate","feeAnnual",
                   "feeInterchange","feeService","gainSale","opex","marketing","tax"];
 function blankIS(){ const o={}; for(const k of IS_LINES) o[k]=0; return o; }
 function blankCapital(){
-  return { tranches: [], lastRaise: -9999, raises: 0, raised: 0, raiseFees: 0,
+  return { tranches: [], wholesale: [], lastRaise: -9999, raises: 0, raised: 0, raiseFees: 0,
+           borrowCount: 0, depSaleCount: 0, depSoldAmt: 0, depPremium: 0,
            dividends: 0, lineCuts: 0, linesCut: 0, saleCount: 0, saleProceeds: 0, saleLoss: 0 };
 }
 function netIncomeOf(is){
-  return is.intLoans + is.intSec - is.intDep - is.intSub - is.provision
+  return is.intLoans + is.intSec - is.intDep - is.intSub - is.intWhole - is.provision
        + is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService + is.gainSale
        - is.opex - is.marketing - is.tax;
 }
@@ -786,7 +799,7 @@ function newGame(bankName, diffKey){
 
     // general ledger
     gl: { cash: diff.capital + diff.deposits, securities: 0, grossLoans: 0,
-          allowance: 0, deposits: diff.deposits, subDebt: 0, secBookYield: 0,
+          allowance: 0, deposits: diff.deposits, subDebt: 0, wholesale: 0, secBookYield: 0,
           paidIn: diff.capital, retained: 0 },
     capital: blankCapital(),
 
@@ -797,6 +810,7 @@ function newGame(bankName, diffKey){
       minScore: 620, maxDTI: 0.43,
       autoApprove: 740, autoDecline: 640,
       products: { card:true, personal:true, auto:true, mortgage:true },
+      depositProducts: { checking:true, savings:true, cd:true },
       targetReserve: 0.16, targetCapital: 0.11,   // internal limits, above the regulatory floors
       maxAmount: { card:25000, personal:40000, auto:60000, mortgage:500000 },
       sweep: false, sweepBuffer: 0.18,
@@ -855,7 +869,7 @@ function makeDepositAccount(name, kind, balance, seeded){
 /* --- the one place the balance sheet is allowed to move ----------------- */
 function post(d, tag){
   const dA = (d.cash||0) + (d.securities||0) + (d.grossLoans||0) - (d.allowance||0);
-  const dL = (d.deposits||0) + (d.subDebt||0);
+  const dL = (d.deposits||0) + (d.subDebt||0) + (d.wholesale||0);
   const dE = (d.paidIn||0) + (d.retained||0);
   const drift = dA - dL - dE;
   if(Math.abs(drift) > 1e-6){
@@ -897,7 +911,10 @@ function M(){
   }
   const rwa = rwaCredit + g.securities*CFG.RW.securities;
   const assets = g.cash + g.securities + g.grossLoans - g.allowance;
-  const liabilities = g.deposits + g.subDebt;
+  const liabilities = g.deposits + g.subDebt + g.wholesale;
+  // reserve requirement is held against everything that can be withdrawn or
+  // refuse to roll — retail deposits and wholesale money alike
+  const funding = g.deposits + g.wholesale;
   const equity = g.paidIn + g.retained;          // Tier 1
   // Basel-style: subordinated debt is Tier 2 capital, admissible only up to the
   // size of Tier 1. It props up the capital ratio but never cures insolvency.
@@ -905,11 +922,12 @@ function M(){
   const capital = equity + tier2;
   _mCache = {
     assets, liabilities, equity, rwa, rwaCredit, tier1: equity, tier2, capital,
-    subDebt: g.subDebt,
+    subDebt: g.subDebt, wholesale: g.wholesale, funding,
+    wholeShare: funding > 0 ? g.wholesale/funding : 0,
     t1r: rwa > 0 ? equity/rwa : Infinity,
     cash: g.cash, securities: g.securities, grossLoans: g.grossLoans,
     allowance: g.allowance, netLoans: g.grossLoans - g.allowance, deposits: g.deposits,
-    rr: g.deposits>0 ? g.cash/g.deposits : Infinity,
+    rr: funding>0 ? g.cash/funding : Infinity,
     car: rwa>0 ? capital/rwa : Infinity,
     identityDrift: assets - liabilities - equity,
     activeLoans: active, gross, byProd, cardUndrawn,
@@ -1019,7 +1037,7 @@ function makeApplication(){
                 name:c.name, age:c.age, income:c.income, score:c.score, tier:c.tier,
                 debtPmt:c.debtPmt, existingDTI:c.existingDTI };
   if(product === "deposit"){
-    app.kind = weighted(CFG.DEP_KIND);
+      app.kind = weighted(CFG.DEP_KIND);
     app.requested = Math.max(250, Math.round(Math.exp(8.4 + 1.15*randn()) * (0.7 + 0.8*rnd())));
     app.amount = app.requested;
     app.apy = effectiveDepAPY(app.kind);
@@ -1054,7 +1072,7 @@ function capacityCheck(product, amount, floors){
   const rwAdd = isCard ? amount*CFG.CCF_CARD*CFG.RW.card : amount*CFG.RW[product];
   const newCash = m.cash - draw;
   if(newCash < 0) return { ok:false, why:"not enough cash on hand" };
-  const rr = m.deposits > 0 ? newCash/m.deposits : Infinity;
+  const rr = m.funding > 0 ? newCash/m.funding : Infinity;
   const car = (m.rwa + rwAdd) > 0 ? m.equity/(m.rwa + rwAdd) : Infinity;
   if(rr < L.rr)  return { ok:false, rr, car,
     why:`reserve ratio would fall to ${pct(rr)}, under the ${floors?"regulatory minimum":"internal limit"} of ${pct(L.rr)}` };
@@ -1069,7 +1087,7 @@ function capacityCheck(product, amount, floors){
 function headroom(product, floors){
   const m = M(), L = limits(floors);
   const isCard = product === "card";
-  const cashCap = (m.cash - L.rr*m.deposits) / (isCard ? CFG.CARD_CASH_DRAW : 1);
+  const cashCap = (m.cash - L.rr*m.funding) / (isCard ? CFG.CARD_CASH_DRAW : 1);
   const rwPer = isCard ? CFG.CCF_CARD*CFG.RW.card : CFG.RW[product];
   const carCap = rwPer > 0 ? (m.capital/L.car - m.rwa)/rwPer : Infinity;
   const t1Cap  = rwPer > 0 ? (m.tier1/L.t1 - m.rwa)/rwPer : Infinity;
@@ -1080,6 +1098,8 @@ function headroom(product, floors){
 function underwrite(app){
   const p = S.policy;
   if(app.product === "deposit"){
+    if(!p.depositProducts[app.kind])
+      return { path:"decline", reason:`Not accepting new ${app.kind} accounts.` };
     if(app.amount > CFG.KYC_THRESHOLD)
       return { path:"review", reason:`Deposit of ${fmtMoney(app.amount)} exceeds the ${fmtMoney(CFG.KYC_THRESHOLD)} source-of-funds threshold — compliance review.` };
     return { path:"approve" };
@@ -1283,7 +1303,7 @@ function processCredit(a){
     if(S.macro.econ === "recession") spend *= 0.85;
     else if(S.macro.econ === "boom") spend *= 1.1;
     // the bank has to fund the draw: it cannot spend itself through the reserve floor
-    spend = Math.min(spend, Math.max(0, S.gl.cash - CFG.REQ_RESERVE*S.gl.deposits));
+    spend = Math.min(spend, Math.max(0, S.gl.cash - CFG.REQ_RESERVE*(S.gl.deposits + S.gl.wholesale)));
     spend = Math.round(spend);
     if(spend > 0){
       const ic = Math.round(spend*0.015);      // interchange, net of the merchant payout
@@ -1411,7 +1431,7 @@ function addSecurities(amount){          // blend the purchase into the book yie
 function buySecurities(amount){
   if(S.over) return false;
   const m = M(), L = limits(false);
-  const room = Math.max(0, m.cash - L.rr*m.deposits);
+  const room = Math.max(0, m.cash - L.rr*m.funding);
   amount = Math.round(clamp(amount, 0, room));
   if(amount < 1000) return false;
   addSecurities(amount);
@@ -1438,10 +1458,10 @@ function treasuryOps(){
   const m = M();
   // unwind securities if liquidity is getting thin
   if(S.gl.securities > 0 && m.rr < CFG.REQ_RESERVE + 0.03){
-    const want = (CFG.REQ_RESERVE + 0.05)*m.deposits - m.cash;
+    const want = (CFG.REQ_RESERVE + 0.05)*m.funding - m.cash;
     if(want > 0) ensureCash(m.cash + want);
   } else if(S.policy.sweep){
-    const excess = m.cash - S.gl.deposits*S.policy.sweepBuffer;
+    const excess = m.cash - m.funding*S.policy.sweepBuffer;
     if(excess > 25000) addSecurities(excess);
   }
   if(S.gl.securities > 0){
@@ -1632,7 +1652,7 @@ function callQuote(i){
   const sub2 = S.gl.subDebt - t.amount;
   const capAfter = t1 + (t1 > 0 ? Math.min(sub2, t1) : 0);
   const carAfter = m.rwa > 0 ? capAfter/m.rwa : Infinity;
-  const rrAfter = m.deposits > 0 ? (m.cash - cost)/m.deposits : Infinity;
+  const rrAfter = m.funding > 0 ? (m.cash - cost)/m.funding : Infinity;
   const reasons = [];
   if(m.cash < cost) reasons.push("not enough cash");
   if(carAfter < CFG.REQ_CAPITAL) reasons.push(`capital ratio would fall to ${pct(carAfter)}`);
@@ -1653,6 +1673,111 @@ function callSubDebt(i){
   return true;
 }
 
+/* =========================== funding actions ===========================
+   A bank does not have to be deposit-funded. Wholesale money arrives in size,
+   instantly, with no branch network and no reputation — and it leaves at the
+   first sign that you are no longer well capitalised, which is exactly when you
+   cannot afford for it to go.
+   ===================================================================== */
+function wholesaleTerms(){
+  const m = M();
+  const wellCap = m.car >= CFG.REQ_CAPITAL && m.t1r >= CFG.REQ_TIER1 && !S.reg.restricted;
+  let spread = CFG.WHOLE_SPREAD;
+  if(!wellCap) spread += 2.5;
+  else if(m.car < Math.max(CFG.REQ_CAPITAL, S.policy.targetCapital)) spread += 1.0;
+  if(S.rep < 40) spread += 0.75;
+  if(m.nplRate > 0.04) spread += 0.75;
+  const r = round2(S.macro.rate + spread);
+  const share = CFG.WHOLE_MAX_SHARE;
+  const headroomAmt = (share*m.assets - m.wholesale)/(1 - share);
+  const max = Math.max(0, Math.floor(headroomAmt/25000)*25000);
+  return { rate: r, spread, max, wellCap, share,
+           ok: wellCap && max >= 25000 && S.rep >= 15 };
+}
+function borrowWholesale(amount, termMonths){
+  if(S.over) return false;
+  const t = wholesaleTerms();
+  if(!t.ok) return false;
+  amount = clamp(Math.round(amount), 25000, t.max);
+  post({ cash: amount, wholesale: amount }, "wholesale-draw");
+  S.capital.wholesale.push({ amount, rate: t.rate, term: termMonths,
+                             matures: S.day + termMonths*CFG.DAYS_PER_MONTH, drawn: S.day });
+  S.capital.borrowCount++;
+  logEvent(`Drew ${fmtMoney(amount)} of ${termMonths}-month wholesale funding at ${rate(t.rate)}.`, "info");
+  toast("Funding drawn", `${fmtMoney(amount)} in cash at ${rate(t.rate)}. It rolls only while you stay well capitalised.`, "ok");
+  bumpAll(); saveGame();
+  return true;
+}
+function repayWholesale(i){
+  if(S.over) return false;
+  const w = S.capital.wholesale[i];
+  if(!w) return false;
+  const fee = Math.round(w.amount*CFG.WHOLE_BREAK_FEE);
+  const cost = w.amount + fee;
+  if(!ensureCash(cost)){
+    toast("Cannot repay", `Repaying this tranche costs ${fmtMoney(cost)} and the cash is not there.`, "bad");
+    return false;
+  }
+  post({ cash:-cost, wholesale:-w.amount, retained:-fee }, "wholesale-repay");
+  acc("opex", fee);
+  S.capital.wholesale.splice(i, 1);
+  logEvent(`Repaid ${fmtMoney(w.amount)} of wholesale funding early — ${fmtMoney(fee)} breakage fee.`, "info");
+  bumpAll(); saveGame();
+  return true;
+}
+
+// Selling a deposit book: the buyer takes the liability and pays you a premium
+// for the franchise. Cheap, sticky money is worth a lot; hot CD money is not.
+function depositSaleQuote(kind, share){
+  let bal = 0, n = 0, cost = 0;
+  for(const d of S.depAccts){
+    if(d.status !== "open" || d.kind !== kind) continue;
+    n++; bal += d.balance;
+    cost += d.balance*(kind === "cd" ? d.apy : effectiveDepAPY(kind));
+  }
+  const myApy = bal > 0 ? cost/bal : effectiveDepAPY(kind);
+  const gap = myApy - marketDepAPY(kind);
+  let prem = CFG.DEP_PREMIUM[kind]
+           * clamp(1 - gap/3, 0.05, 1.5)
+           * clamp(0.7 + S.rep/150, 0.7, 1.15)
+           * (S.macro.econ === "recession" ? 0.8 : S.macro.econ === "boom" ? 1.1 : 1);
+  prem = clamp(prem, 0, 0.12);
+  const sellBal = bal*share;
+  return { n, bal, sellBal, prem, myApy, gap, premium: sellBal*prem,
+           cashOut: sellBal*(1 - prem), annualCost: sellBal*myApy/100,
+           ok: n > 0 && sellBal > 1000 };
+}
+function sellDeposits(kind, share){
+  if(S.over) return false;
+  const q = depositSaleQuote(kind, share);
+  if(!q.ok) return false;
+  const pool = [];
+  for(const d of S.depAccts) if(d.status === "open" && d.kind === kind) pool.push(d);
+  for(let i=pool.length-1;i>0;i--){ const j = Math.floor(rnd()*(i+1)); const t = pool[i]; pool[i] = pool[j]; pool[j] = t; }
+  const chosen = []; let sold = 0;
+  for(const d of pool){ if(sold >= q.sellBal) break; chosen.push(d); sold += d.balance; }
+  if(!chosen.length || sold <= 0) return false;
+  const premium = sold*q.prem, cashOut = sold - premium;
+  if(!ensureCash(cashOut)){
+    toast("Sale failed", "Not enough cash to hand the balances over to the buyer.", "bad");
+    return false;
+  }
+  post({ cash:-cashOut, deposits:-sold, retained:premium }, "deposit-sale");
+  acc("gainSale", premium);
+  for(const d of chosen){
+    d.balance = 0; d.status = "sold"; d.closedDay = S.day; d.closeWhy = "sold with the deposit book";
+  }
+  const open = S.depAccts.reduce((n,d)=>n+(d.status === "open" ? 1 : 0), 0) + chosen.length;
+  const hit = clamp(chosen.length/Math.max(1, open)*8, 0.5, 6);
+  S.rep = clamp(S.rep - hit, 0, 100);
+  const c = S.capital;
+  c.depSaleCount++; c.depSoldAmt += sold; c.depPremium += premium;
+  logEvent(`Sold ${fmtMoney(sold)} of ${kind} deposits (${chosen.length} accounts) for a ${pct(q.prem)} premium — ${fmtMoney(premium)} gain, ${fmtMoney(cashOut)} of cash handed over.`, "info");
+  toast("Deposits sold", `${fmtMoney(premium)} premium booked. Funding base now ${fmtCompact(M().funding)}.`, "ok");
+  bumpAll(); saveGame();
+  return true;
+}
+
 function capitalAfterPayout(x){
   const t1 = M().tier1 - x;
   return t1 + (t1 > 0 ? Math.min(S.gl.subDebt, t1) : 0);
@@ -1667,7 +1792,7 @@ function dividendCapacity(){
     const okT1  = m.rwa <= 0 || (m.tier1 - mid) >= (CFG.REQ_TIER1 + 0.02)*m.rwa;
     if(okCar && okT1) lo = mid; else hi = mid;
   }
-  const byCash = Math.max(0, m.cash - L.rr*m.deposits);
+  const byCash = Math.max(0, m.cash - L.rr*m.funding);
   const byEarnings = Math.max(0, trailingNI(12));
   const max = Math.floor(Math.min(lo, byCash, byEarnings)/1000)*1000;
   return { blocked, max, byCapital:lo, byCash, byEarnings };
@@ -1829,6 +1954,8 @@ function reputationTarget(){
   t += netIncomeOf(S.is.mtd) > 0 ? 3 : -3;
   if(M().nplRate > 0.06) t -= 6;
   if(S.reg.restricted) t -= 10;
+  const shut = ["checking","savings","cd"].filter(k => !S.policy.depositProducts[k]).length;
+  t -= shut*2.5;
   return clamp(t, 0, 100);
 }
 
@@ -1861,6 +1988,35 @@ function monthClose(){
       logEvent(`Repaid ${fmtMoney(t.amount)} of maturing subordinated notes.`, "info");
     }
     S.capital.tranches = S.capital.tranches.filter(t => S.day < t.matures);
+  }
+
+  // wholesale funding: interest, then roll or repay whatever has matured
+  if(S.capital.wholesale.length){
+    let coupon = 0;
+    for(const w of S.capital.wholesale) coupon += w.amount*w.rate/1200;
+    if(coupon > 0){
+      if(!ensureCash(coupon)) return liquidityFailure(coupon);
+      income("intWhole", coupon, { cash:-coupon, retained:-coupon }, "wholesale-interest");
+    }
+    const wt = wholesaleTerms();
+    const keep = []; let rolled = 0, pulled = 0;
+    for(const w of S.capital.wholesale){
+      if(S.day < w.matures){ keep.push(w); continue; }
+      if(wt.wellCap){
+        w.rate = wt.rate; w.matures = S.day + w.term*CFG.DAYS_PER_MONTH;
+        rolled += w.amount; keep.push(w);
+      } else {
+        if(!ensureCash(w.amount)){
+          return gameOver("Wholesale funding withdrawn",
+            `${fmtMoney(w.amount)} of wholesale funding matured and would not roll — lenders do not renew for a bank that is no longer well capitalised. The cash was not there to repay it.`);
+        }
+        post({ cash:-w.amount, wholesale:-w.amount }, "wholesale-maturity");
+        pulled += w.amount;
+      }
+    }
+    S.capital.wholesale = keep;
+    if(rolled > 0) logEvent(`${fmtMoney(rolled)} of wholesale funding rolled at ${rate(wt.rate)}.`, "info");
+    if(pulled > 0) logEvent(`${fmtMoney(pulled)} of wholesale funding was pulled — lenders would not roll it.`, "bad");
   }
 
   // loan-loss provisioning: top the allowance up to one year of expected loss
@@ -1930,7 +2086,7 @@ function pruneDead(){
     keepL.push(a);
   }
   for(const d of S.depAccts){
-    if(d.status === "closed" && d.closedDay < cut) continue;
+    if((d.status === "closed" || d.status === "sold") && d.closedDay < cut) continue;
     keepD.push(d);
   }
   S.loans = keepL; S.depAccts = keepD;
@@ -2078,10 +2234,13 @@ function migrate(o){
   // securities predate the book-yield model: mark them at today's yield, so an
   // existing holding starts with neither a gain nor a loss
   if(o.gl.secBookYield == null) o.gl.secBookYield = Math.max(0.2, (o.macro ? o.macro.rate : 4) - 0.5);
+  o.gl.wholesale = o.gl.wholesale || 0;
+  if(!o.policy.depositProducts) o.policy.depositProducts = { checking:true, savings:true, cd:true };
   const bc = blankCapital();
   if(!o.capital) o.capital = bc;
   else for(const k in bc) if(o.capital[k] === undefined) o.capital[k] = bc[k];
   if(!Array.isArray(o.capital.tranches)) o.capital.tranches = [];
+  if(!Array.isArray(o.capital.wholesale)) o.capital.wholesale = [];
   o.is = o.is || {};
   for(const k of ["mtd","last","ytd","life"]){
     if(!o.is[k]) o.is[k] = blankIS();
@@ -2260,7 +2419,8 @@ function renderOverview(){
   );
 
   setHTML("ovGauges",
-    gauge("Reserve ratio", m.rr, CFG.REQ_RESERVE, "cash ÷ deposits", S.policy.targetReserve) +
+    gauge("Reserve ratio", m.rr, CFG.REQ_RESERVE,
+          m.wholesale > 0 ? "cash ÷ deposits &amp; wholesale" : "cash ÷ deposits", S.policy.targetReserve) +
     gauge("Total capital ratio", m.car, CFG.REQ_CAPITAL, "capital ÷ risk-weighted assets", S.policy.targetCapital) +
     gauge("Tier 1 ratio", m.t1r, CFG.REQ_TIER1, "equity ÷ risk-weighted assets") +
     `<div class="rule"></div>` +
@@ -2269,12 +2429,13 @@ function renderOverview(){
     (m.subDebt > 0 ? row("Tier 2 (admissible)", fmtMoney(m.tier2) +
       (m.tier2 < m.subDebt ? ` <span class="dim">of ${fmtCompact(m.subDebt)}</span>` : "")) : "") +
     row("Loan-to-deposit ratio", pct(m.ldr)) +
+    (m.wholesale > 0 ? row("Wholesale share of funding", pct(m.wholeShare), m.wholeShare > 0.30 ? "warn" : "") : "") +
     row("Internal limits", pct(S.policy.targetReserve,0)+" / "+pct(S.policy.targetCapital,0), "muted") +
     row("Unsecured headroom (policy)", fmtCompact(headroom("personal")), "muted") +
     row("Unsecured headroom (legal)", fmtCompact(headroom("personal", true)), "muted")
   );
 
-  const is = S.is.mtd, nii = is.intLoans + is.intSec - is.intDep - is.intSub;
+  const is = S.is.mtd, nii = is.intLoans + is.intSec - is.intDep - is.intSub - is.intWhole;
   const fees = is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService + is.gainSale;
   const ni = netIncomeOf(is);
   setText("ovISPeriod", "month to date");
@@ -2317,6 +2478,8 @@ function renderOverview(){
   else if(m.rr < CFG.REQ_RESERVE*1.25) A.push(["warn","▼",`Reserve ratio ${pct(m.rr)} leaves little liquidity buffer.`]);
   if(m.nplRate > 0.05) A.push(["bad","▲",`Non-performing loans are ${pct(m.nplRate)} of the book. Charge-offs are coming — check the allowance.`]);
   else if(m.delinqRate > 0.06) A.push(["warn","▲",`Delinquencies at ${pct(m.delinqRate)} of the book and rising.`]);
+  if(m.wholeShare > 0.30)
+    A.push(["warn","≡",`Wholesale funding is ${pct(m.wholeShare)} of your funding base. It rolls only while you are well capitalised — a capital breach would pull it exactly when you cannot replace it.`]);
   const unrealOv = secUnrealized();
   if(unrealOv < 0 && -unrealOv > 0.10*Math.max(1, m.equity))
     A.push(["bad","▼",`Your securities book is <b>${fmtMoney(-unrealOv)}</b> underwater — ${pct(-unrealOv/m.equity)} of equity. It is only a paper loss until you need the cash.`]);
@@ -2620,7 +2783,8 @@ function renderPortfolio(){
          <option value="current">Current</option><option value="delinquent">Delinquent</option>
          <option value="chargedoff">Charged off</option><option value="closed">Closed / paid off</option>
          <option value="sold">Sold</option>`
-      : `<option value="active">Open only</option><option value="">All</option><option value="closed">Closed</option>`;
+      : `<option value="active">Open only</option><option value="">All</option>
+         <option value="closed">Closed</option><option value="sold">Sold</option>`;
     pfs.dataset.for = type;
     pfs.value = [...pfs.options].some(o=>o.value===v) ? v : "active";
   }
@@ -2736,6 +2900,12 @@ function buildRates(){
     `<div class="rule"></div>` +
     numRow("Emergency APY premium %", "policy.apyEmergency", S.policy.apyEmergency, 0.25, 0, 4,
       "Added to every deposit rate. Calms a run fast; every basis point is real interest expense.") +
+    `<div class="rule"></div><div style="font-size:11px;color:var(--text-2);margin-bottom:5px">Accepting new accounts</div>` +
+    ["checking","savings","cd"].map(k => `<label class="switch"><input type="checkbox" data-bind="policy.depositProducts.${k}" data-re="rates"
+      ${S.policy.depositProducts[k] ? "checked" : ""}> ${k === "cd" ? "12-month CD" : k.charAt(0).toUpperCase()+k.slice(1)}</label>`).join("") +
+    `<div class="hint">Closing a product turns applicants away at the door. Existing accounts stay and keep earning
+      interest, but the book stops replacing what attrits — and refusing depositors costs reputation.</div>` +
+    `<div class="rule"></div>` +
     `<div class="hint">Blended cost of funds right now: <b>${rate(fundingCost())}</b>.</div>`);
 
   setHTML("rsFees",
@@ -2882,7 +3052,8 @@ function buildMarketing(){
 }
 
 /* ------------------------------ treasury ------------------------------ */
-const TR = { lineThresh: 30, saleProduct: "card", saleShare: 20 };
+const TR = { lineThresh: 30, saleProduct: "card", saleShare: 20,
+             wholeTerm: 6, depSaleKind: "savings", depSaleShare: 25 };
 
 function buildTreasury(){
   const m = M(), L = limits(false);
@@ -2911,7 +3082,7 @@ function buildTreasury(){
       It shrinks when you lose money, pay a dividend, or add risk-weighted assets.</div>`);
 
   const mark = secMark(), unreal = secUnrealized();
-  const secRoom = Math.max(0, m.cash - L.rr*m.deposits);
+  const secRoom = Math.max(0, m.cash - L.rr*m.funding);
   setHTML("trSecurities",
     `<div class="hint" style="margin-bottom:9px">Securities pay whatever yield you bought them at, carry a
       ${pct(CFG.RW.securities,0)} risk weight — and are <b>not cash</b> for the reserve ratio. Buying them converts
@@ -2943,6 +3114,62 @@ function buildTreasury(){
           any cash above ${pct(S.policy.sweepBuffer,0)} of deposits is bought into securities. Selling now will be
           undone at the next close unless you switch it off in Rates &amp; Policy.</div>`
       : ""));
+
+  const wt = wholesaleTerms();
+  const outstandingW = S.capital.wholesale.reduce((n,w)=>n+w.amount, 0);
+  setHTML("trWhole",
+    `<div class="hint" style="margin-bottom:9px">Wholesale money arrives in size and instantly — no branches, no
+      marketing, no reputation. It costs more than retail deposits, it counts in the reserve requirement like a
+      deposit, and it rolls at maturity <i>only while you are well capitalised</i>. Fall below the minimum and it
+      walks at the worst possible moment.</div>` +
+    row("Outstanding", fmtMoney(outstandingW,0) + (S.capital.wholesale.length ? ` · ${S.capital.wholesale.length} tranche${S.capital.wholesale.length===1?"":"s"}` : "")) +
+    row("Share of funding", pct(m.wholeShare), m.wholeShare > 0.30 ? "warn" : "") +
+    row("Rate offered", rate(wt.rate) + `<span class="dim"> · policy ${rate(S.macro.rate)} + ${wt.spread.toFixed(2)}</span>`,
+        wt.wellCap ? "" : "bad") +
+    row("Available to draw", fmtMoney(wt.max,0) + `<span class="dim"> · cap ${pct(wt.share,0)} of assets</span>`) +
+    (S.capital.wholesale.length
+      ? `<div class="rule"></div>` + S.capital.wholesale.map((w,i) =>
+          `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--line)">
+            <span style="flex:1;font-size:12px">${fmtCompact(w.amount)} at ${rate(w.rate)}
+              <span class="dim">· ${w.term}mo · rolls ${fmtDate(w.matures)}</span></span>
+            <button class="btn sm" data-repay="${i}" ${m.cash >= w.amount*(1+CFG.WHOLE_BREAK_FEE) ? "" : "disabled"}
+              title="Costs ${esc(fmtMoney(w.amount*(1+CFG.WHOLE_BREAK_FEE)))} including breakage">Repay</button>
+          </div>`).join("")
+        + `<div class="hint" style="margin-top:6px">Repaying early costs ${pct(CFG.WHOLE_BREAK_FEE,1)} breakage.</div>`
+      : "") +
+    `<div style="display:flex;gap:7px;align-items:flex-end;margin-top:10px">
+      <label class="field" style="flex:1;margin:0"><span>Draw</span>
+        <input type="number" id="trWholeAmt" step="25000" min="25000" max="${wt.max}" value="${Math.min(wt.max, Math.max(25000, Math.round(wt.max/2/25000)*25000))}"></label>
+      <label class="field" style="width:96px;margin:0"><span>Term</span>
+        <select id="trWholeTerm">${CFG.WHOLE_TERMS.map(t=>`<option value="${t}"${t===TR.wholeTerm?" selected":""}>${t} mo</option>`).join("")}</select></label>
+      <button class="btn" id="btnWhole" ${wt.ok?"":"disabled"}>Draw</button>
+    </div>` +
+    (wt.ok ? "" : `<div class="hint" style="color:var(--bad)">${
+      !wt.wellCap ? "No lender will fund a bank that is not well capitalised. This is the door that shuts first."
+      : S.rep < 15 ? "Reputation is too poor to access the wholesale market."
+      : "Already at the cap on wholesale as a share of assets."}</div>`));
+
+  const dq = depositSaleQuote(TR.depSaleKind, TR.depSaleShare/100);
+  setHTML("trDepSale",
+    `<div class="hint" style="margin-bottom:9px">A buyer will take a deposit book off your hands and <i>pay you</i>
+      for it — cheap, sticky money is a franchise worth owning. You hand over the balances in cash and keep the
+      premium. Paying above market for those deposits is exactly what makes them worth less.</div>` +
+    `<div style="display:flex;gap:8px">
+      <label class="field" style="flex:1"><span>Book</span>
+        <select id="trDepKind">${["checking","savings","cd"].map(k=>`<option value="${k}"${k===TR.depSaleKind?" selected":""}>${k==="cd"?"12-month CD":k}</option>`).join("")}</select></label>
+      <label class="field" style="flex:1"><span>Share to sell <b id="trDepShareV">${TR.depSaleShare}%</b></span>
+        <input type="range" id="trDepShare" min="5" max="100" step="5" value="${TR.depSaleShare}"></label>
+    </div>` +
+    row("Accounts in book", dq.n) +
+    row("Balances", fmtMoney(dq.bal,0)) +
+    row("You pay on it", rate(dq.myApy) + `<span class="dim"> · market ${rate(marketDepAPY(TR.depSaleKind))}</span>`,
+        dq.gap > 0 ? "warn" : "good") +
+    row("Premium offered", pct(dq.prem), dq.prem > 0.02 ? "good" : "") +
+    row("Cash you hand over", fmtMoney(dq.cashOut,0)) +
+    row("Gain booked", fmtMoney(dq.premium,0), "good") +
+    row("Interest expense removed", fmtMoney(dq.annualCost,0) + "/yr", "good") +
+    `<button class="btn" id="btnDepSale" style="margin-top:9px;width:100%" ${dq.ok?"":"disabled"}>Sell deposit book</button>` +
+    (S.capital.depSaleCount ? `<div class="hint" style="margin-top:6px">${S.capital.depSaleCount} sale${S.capital.depSaleCount===1?"":"s"} · ${fmtCompact(S.capital.depSoldAmt)} sold · ${fmtCompact(S.capital.depPremium)} of premium booked.</div>` : ""));
 
   const rc = raiseCapacity();
   const suggest = (max) => {
@@ -3093,6 +3320,7 @@ function buildFinancials(){
     row("TOTAL ASSETS", fmtMoney(m.assets,0), "total") +
     headRow("Liabilities") +
     row("Deposits", fmtMoney(g.deposits,0)) +
+    row("Wholesale funding", fmtMoney(g.wholesale,0)) +
     row("Subordinated notes", fmtMoney(g.subDebt,0)) +
     row("TOTAL LIABILITIES", fmtMoney(m.liabilities,0), "total") +
     headRow("Equity") +
@@ -3104,7 +3332,7 @@ function buildFinancials(){
         Math.abs(m.identityDrift) < 0.01 ? "good" : "bad"));
 
   const is = isPeriod();
-  const nii = is.intLoans + is.intSec - is.intDep - is.intSub;
+  const nii = is.intLoans + is.intSec - is.intDep - is.intSub - is.intWhole;
   const fees = is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService + is.gainSale;
   setHTML("finIS",
     headRow("Interest income") +
@@ -3112,6 +3340,7 @@ function buildFinancials(){
     row("Investment securities", fmtMoney(is.intSec,0), null, true) +
     row("Total interest income", fmtMoney(is.intLoans+is.intSec,0)) +
     row("Interest expense — deposits", "("+fmtMoney(is.intDep,0)+")") +
+    row("Interest expense — wholesale funding", "("+fmtMoney(is.intWhole,0)+")") +
     row("Interest expense — subordinated notes", "("+fmtMoney(is.intSub,0)+")") +
     row("NET INTEREST INCOME", fmtMoney(nii,0), "total") +
     row("Provision for credit losses", provText(is.provision), is.provision>0?"bad":"good") +
@@ -3480,6 +3709,11 @@ function wire(){
       const b = $("btnLines"); if(b) b.disabled = !lineCutPreview(TR.lineThresh/100).n;
       return;
     }
+    if(e.target.id === "trDepShare"){
+      TR.depSaleShare = +e.target.value;
+      setText("trDepShareV", TR.depSaleShare + "%");
+      return;
+    }
     if(e.target.id === "trSaleShare"){
       TR.saleShare = +e.target.value;
       setText("trSaleShareV", TR.saleShare + "%");
@@ -3497,6 +3731,14 @@ function wire(){
     }
   });
   main.addEventListener("click", e => {
+    const repayBtn = e.target.closest("button[data-repay]");
+    if(repayBtn && !S.over){
+      const i = +repayBtn.dataset.repay, w = S.capital.wholesale[i];
+      if(w && confirm(`Repay ${fmtMoney(w.amount)} of wholesale funding early? Breakage costs ${fmtMoney(w.amount*CFG.WHOLE_BREAK_FEE)}.`))
+        repayWholesale(i);
+      buildTreasury();
+      return;
+    }
     const callBtn = e.target.closest("button[data-call]");
     if(callBtn && !S.over){
       const i = +callBtn.dataset.call, q = callQuote(i);
@@ -3506,6 +3748,20 @@ function wire(){
       return;
     }
     const id = e.target.id;
+    if(id === "btnWhole"){
+      if(!S.over) borrowWholesale(+$("trWholeAmt").value, TR.wholeTerm);
+      buildTreasury();
+      return;
+    }
+    if(id === "btnDepSale"){
+      if(!S.over){
+        const q = depositSaleQuote(TR.depSaleKind, TR.depSaleShare/100);
+        if(q.ok && confirm(`Sell ${TR.depSaleShare}% of the ${TR.depSaleKind} book? You hand over ${fmtCompact(q.cashOut)} of cash, book a ${fmtCompact(q.premium)} premium, and lose ${fmtCompact(q.annualCost)}/yr of interest expense.`))
+          sellDeposits(TR.depSaleKind, TR.depSaleShare/100);
+      }
+      buildTreasury();
+      return;
+    }
     if(id === "btnSecBuy" || id === "btnSecSell"){
       if(S.over) return;
       if(id === "btnSecBuy") buySecurities(+$("trSecBuy").value);
@@ -3561,6 +3817,9 @@ function wire(){
   });
   main.addEventListener("change", e => {
     if(e.target.id === "trSaleProduct"){ TR.saleProduct = e.target.value; updateSalePreview(); return; }
+    if(e.target.id === "trWholeTerm"){ TR.wholeTerm = +e.target.value; return; }
+    if(e.target.id === "trDepKind"){ TR.depSaleKind = e.target.value; buildTreasury(); return; }
+    if(e.target.id === "trDepShare"){ TR.depSaleShare = +e.target.value; buildTreasury(); return; }
     if(e.target.id === "setPauseBlur"){ S.pauseOnBlur = e.target.checked; saveGame(); }
     if(e.target.id === "fileImport" && e.target.files[0]){
       const fr = new FileReader();

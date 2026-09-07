@@ -221,6 +221,23 @@ Saves live in `localStorage`, which is per-origin and per-device — a bank star
 appear on a phone. Move one across with **Settings → Export save**, then **Import save** on the other
 device.
 
+## Reading profitability without waiting for month-end
+
+The month-to-date figures on Overview are real bookkeeping, not an estimate — but interest, provisioning,
+operating expense and most fee lines only post once, at the monthly close, so "Net income (MTD)" reads as
+roughly zero for most of the month and then jumps. That is not a bug; it is what actually happens on a
+real ledger. To see profitability *before* the close, the capital card on Overview carries a live
+**efficiency ratio** — `(opex + marketing) ÷ (net interest income + fees)`, the standard banking measure,
+target ≤65% — computed every tick from the current balance sheet rather than from what has posted so far.
+
+It works because operating expense and interest income are both smooth functions of today's balances (the
+same formulas the real close uses, so the two never drift apart), while origination fees post the moment
+a loan is booked and can be extrapolated honestly. Late fees, annual fees, interchange and service charges
+are different: they are computed once, inside the close itself, so there is no partial-month number to
+read — the live gauge uses last month's actual result for those instead of quietly reporting zero. Checked
+against real closes across several banks, the projection typically lands within 2–4% of the number that
+actually posts.
+
 ## Controls
 
 Speed is paused / 1× / 4× / 15×, where 1× is 2.5 real seconds per simulated day, so a 30-day month

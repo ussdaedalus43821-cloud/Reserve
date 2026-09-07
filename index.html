@@ -936,7 +936,7 @@ let _mv = 0, _mCacheV = -1, _mCache = null;
 function M(){
   if(_mCacheV === _mv && _mCache) return _mCache;
   const g = S.gl;
-  let rwaCredit = 0, cardUndrawn = 0, gross = 0, delinq = 0, npl = 0, active = 0;
+  let rwaCredit = 0, cardUndrawn = 0, gross = 0, delinq = 0, npl = 0, active = 0, projInt = 0;
   const byProd = { card:0, personal:0, auto:0, mortgage:0 };
   let expLoss = 0;
   for(let i=0;i<S.loans.length;i++){
@@ -953,7 +953,22 @@ function M(){
     }
     if(a.missed>0){ delinq += a.balance; if(a.missed>=3) npl += a.balance; }
     expLoss += a.balance * pdAnnual(a) * CFG.LGD[a.product];
+    // mirrors processCredit's accrual gate exactly, so the live projection
+    // and the real month-end number are computed the same way
+    if(a.missed < 3 && (a.product !== "card" || a.revolver || a.missed > 0) && a.balance > 0)
+      projInt += a.balance * a.apr / 1200;
   }
+  let openDep = 0, projDepInt = 0;
+  for(let i=0;i<S.depAccts.length;i++){
+    const d = S.depAccts[i];
+    if(d.status !== "open") continue;
+    openDep++;
+    projDepInt += d.balance*(d.kind==="cd" ? d.apy : effectiveDepAPY(d.kind))/1200;
+  }
+  let projSubInt = 0; for(const t of S.capital.tranches) projSubInt += t.amount*t.rate/1200;
+  let projWholeInt = 0; for(const w of S.capital.wholesale) projWholeInt += w.amount*w.rate/1200;
+  const projSecInt = g.securities*(g.secBookYield || secMarketYield())/1200;
+
   const rwa = rwaCredit + g.securities*CFG.RW.securities;
   const assets = g.cash + g.securities + g.grossLoans - g.allowance;
   const liabilities = g.deposits + g.subDebt + g.wholesale;
@@ -981,8 +996,13 @@ function M(){
     nplRate: gross>0 ? npl/gross : 0,
     requiredAllowance: expLoss,
     coverage: gross>0 ? g.allowance/gross : 0,
-    depAccts: S.depAccts.length ? S.depAccts.filter(d=>d.status==="open").length : 0,
+    depAccts: openDep,
     ldr: g.deposits>0 ? g.grossLoans/g.deposits : 0,
+    // "if the month closed on the balance sheet as it stands right now" —
+    // computed from live balances every tick rather than waiting for the
+    // real monthly close, so profitability is visible continuously
+    projIntIncome: projInt, projSecInt, projDepInt, projSubInt, projWholeInt,
+    projOpex: CFG.OPEX_BASE + assets*CFG.OPEX_ASSET_BPS + openDep*CFG.OPEX_DEP_ACCT + active*CFG.OPEX_CREDIT_ACCT,
   };
   _mCacheV = _mv;
   return _mCache;
@@ -2094,9 +2114,7 @@ function monthClose(){
 
   // operating costs
   const m = M();
-  const opex = CFG.OPEX_BASE + m.assets*CFG.OPEX_ASSET_BPS
-             + S.depAccts.reduce((n,d)=>n+(d.status==="open"?1:0),0)*CFG.OPEX_DEP_ACCT
-             + m.activeLoans*CFG.OPEX_CREDIT_ACCT;
+  const opex = m.projOpex;
   if(!ensureCash(opex)) return liquidityFailure(opex);
   income("opex", opex, { cash:-opex, retained:-opex }, "opex");
   if(S.marketing.budget > 0){
@@ -2498,6 +2516,34 @@ function renderOverview(){
     gauge("Total capital ratio", m.car, CFG.REQ_CAPITAL, "capital ÷ risk-weighted assets", S.policy.targetCapital) +
     gauge("Tier 1 ratio", m.t1r, CFG.REQ_TIER1, "equity ÷ risk-weighted assets") +
     `<div class="rule"></div>` +
+    (()=>{
+      // "if the month closed right now": today's fee run-rate (booked so far
+      // this month, annualised to a full month) plus live interest accrual on
+      // the current book, against today's opex — updates every tick instead
+      // of waiting for the real close.
+      // Origination fees post the moment a loan is booked, so today's amount
+      // is real and worth extrapolating. Late/annual/interchange/service fees
+      // are only ever computed once, inside the monthly close itself — there
+      // is no partial-month number to prorate, so those four use last month's
+      // actual result instead of quietly reporting zero all month.
+      const is = S.is.mtd, last = S.is.last;
+      const dom = dateParts(S.day).d;
+      const projOrigFee = dom > 0 ? is.feeOrig/dom*CFG.DAYS_PER_MONTH : 0;
+      const trailingFee = last.feeLate + last.feeAnnual + last.feeInterchange + last.feeService;
+      const projFees = projOrigFee + trailingFee;
+      const revenue = (m.projIntIncome + m.projSecInt) - (m.projDepInt + m.projSubInt + m.projWholeInt) + projFees;
+      const cost = m.projOpex + S.marketing.budget;
+      const eff = cost > 0 ? cost/revenue : (revenue > 0 ? 0 : 1);
+      const color = eff < 0 ? "var(--bad)" : eff <= 0.65 ? "var(--good)" : eff <= 1 ? "var(--warn)" : "var(--bad)";
+      const net = revenue - cost;
+      const noHistory = S.history.length === 0;
+      return `<div class="rule"></div>` +
+        bar("Efficiency ratio (live)", eff*100, 150, color,
+            revenue <= 0 ? fmtMoney(revenue,0)+" net revenue" : pct(eff)) +
+        `<div class="gh" style="margin:-6px 0 8px">opex + marketing ÷ net interest income + fees, projected off today's book · target ≤65%
+          ${noHistory ? " · fee income will read low until the first month closes" : ""}</div>` +
+        row("Projected monthly result", fmtMoney(net,0) + " <span class=\"dim\">pre-provision, pre-tax</span>", sign(net));
+    })() +
     row("Risk-weighted assets", fmtMoney(m.rwa)) +
     row("Tier 1 (equity)", fmtMoney(m.tier1)) +
     (m.subDebt > 0 ? row("Tier 2 (admissible)", fmtMoney(m.tier2) +

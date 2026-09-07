@@ -541,6 +541,13 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
         <div class="card"><h3>Subordinated notes · Tier 2</h3><div class="body" id="trSub"></div></div>
       </div>
       <div class="grid g2" style="margin-bottom:12px">
+        <div class="card"><h3>Interbank borrowing</h3><div class="body" id="trInterbank"></div></div>
+        <div class="card"><h3>CoCo bonds · contingent convertible</h3><div class="body" id="trCoco"></div></div>
+      </div>
+      <div class="grid" style="margin-bottom:12px">
+        <div class="card"><h3>Regulatory standing &amp; emergency support</h3><div class="body" id="trReg"></div></div>
+      </div>
+      <div class="grid g2" style="margin-bottom:12px">
         <div class="card"><h3>Dividends</h3><div class="body" id="trDiv"></div></div>
         <div class="card"><h3>Credit line management</h3><div class="body" id="trLines"></div></div>
       </div>
@@ -639,6 +646,34 @@ const CFG = {
   SUB_SPREAD: 3.0,           // over the policy rate, for a healthy issuer
   LINE_CUT_CLOSE: 0.08,      // share of cardholders who close after a line cut
   SALE_BASE_DISCOUNT: 0.015, // buyer's margin on a loan portfolio sale
+  // The required allowance can jump sharply the month a macro regime flips
+  // (the recession multiplier alone is 2.5x), and regimes can be short-lived.
+  // Snapping the allowance to target in one month turns that into a P&L
+  // whipsaw with no actual defaults behind it. Real provisioning models are
+  // slower to move, and asymmetric: quick to build reserves, slow to release
+  // them. PROVISION_UP is the fraction of a growing gap closed per month;
+  // PROVISION_DOWN the fraction of a shrinking one.
+  PROVISION_UP: 0.45,
+  PROVISION_DOWN: 0.18,
+
+  // interbank: a short-term liquidity bridge, priced off how far the reserve
+  // ratio sits below the requirement, not off general distress
+  INTERBANK_TERMS: [1, 7, 14, 30],   // days
+  INTERBANK_BASE_SPREAD: 0.5,        // over the policy rate, for a bank at its own limit
+  INTERBANK_SHORTFALL_MULT: 3.0,     // how large a draw the shortfall alone justifies
+
+  // CoCo bonds: debt until the total capital ratio crosses the trigger, then
+  // an automatic, one-way conversion to equity
+  COCO_TRIGGER_MIN: 0.075, COCO_TRIGGER_MAX: 0.14, COCO_TRIGGER_DEFAULT: 0.095,
+  COCO_PREMIUM: 2.0,   // over what plain subordinated debt would cost
+
+  // regulatory forbearance: one-time, on the first capital breach only
+  FORBEARANCE_DAYS: 180,
+
+  // emergency government injection: last resort, heavy strings, permanent mark
+  BAILOUT_DAYS: 720,
+  BAILOUT_VALUATION_DISCOUNT: 0.5,   // the government's stake is priced as if equity were worth half
+  BAILOUT_REP_PENALTY: 8,            // permanent drag on the reputation target
   SEC_DURATION: 4.0,         // years; how hard a rate move marks the securities book
   SEC_SELL_SPREAD: 0.001,    // bid/ask on an orderly securities sale
   SUB_CALL_PROTECT: 5,       // years of call protection on subordinated notes
@@ -804,16 +839,17 @@ function randomName(){ return pick(FIRST)+" "+pick(LAST); }
 let S = null;
 let LEDGER_ERRORS = [];
 
-const IS_LINES = ["intLoans","intSec","intDep","intSub","intWhole","provision","feeOrig","feeLate","feeAnnual",
+const IS_LINES = ["intLoans","intSec","intDep","intSub","intWhole","intInterbank","provision","feeOrig","feeLate","feeAnnual",
                   "feeInterchange","feeService","gainSale","opex","marketing","tax"];
 function blankIS(){ const o={}; for(const k of IS_LINES) o[k]=0; return o; }
 function blankCapital(){
-  return { tranches: [], wholesale: [], lastRaise: -9999, raises: 0, raised: 0, raiseFees: 0,
-           borrowCount: 0, depSaleCount: 0, depSoldAmt: 0, depPremium: 0,
+  return { tranches: [], wholesale: [], cocos: [], interbank: [], lastRaise: -9999, raises: 0, raised: 0, raiseFees: 0,
+           borrowCount: 0, depSaleCount: 0, depSoldAmt: 0, depPremium: 0, ownershipPct: 1,
+           cocoConversions: 0, cocoConverted: 0, bailoutReceived: 0,
            dividends: 0, lineCuts: 0, linesCut: 0, saleCount: 0, saleProceeds: 0, saleLoss: 0 };
 }
 function netIncomeOf(is){
-  return is.intLoans + is.intSec - is.intDep - is.intSub - is.intWhole - is.provision
+  return is.intLoans + is.intSec - is.intDep - is.intSub - is.intWhole - is.intInterbank - is.provision
        + is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService + is.gainSale
        - is.opex - is.marketing - is.tax;
 }
@@ -843,7 +879,7 @@ function newGame(bankName, diffKey){
 
     // general ledger
     gl: { cash: diff.capital + diff.deposits, securities: 0, grossLoans: 0,
-          allowance: 0, deposits: diff.deposits, subDebt: 0, wholesale: 0, secBookYield: 0,
+          allowance: 0, deposits: diff.deposits, subDebt: 0, wholesale: 0, interbank: 0, secBookYield: 0,
           paidIn: diff.capital, retained: 0 },
     capital: blankCapital(),
 
@@ -867,11 +903,14 @@ function newGame(bankName, diffKey){
 
     is: { mtd: blankIS(), last: blankIS(), ytd: blankIS(), life: blankIS() },
     history: [],
-    reg: { capStrikes: 0, resStrikes: 0, restricted: false, breachDays: 0 },
+    reg: { capStrikes: 0, resStrikes: 0, restricted: false, breachDays: 0,
+           forbearanceUsed: false, forbearanceActive: false, forbearanceDeadline: null,
+           pendingForbearance: false, bailoutActive: false, bailoutUntil: null },
     run: { active:false, daysLeft:0, intensity:0, count:0 },
     stats: { customersServed:0, appsReceived:0, appsApproved:0, appsDeclined:0,
              appsExpired:0, offersDeclined:0, chargeOffs:0, chargeOffAmt:0,
-             peakAssets:0, peakEquity:0, lifetimeInterest:0, monthApproved:0, monthDecided:0 },
+             peakAssets:0, peakEquity:0, lifetimeInterest:0, monthApproved:0, monthDecided:0,
+             everBailedOut: false },
     log: [], decisions: [],
   };
   LEDGER_ERRORS = [];
@@ -914,7 +953,7 @@ function makeDepositAccount(name, kind, balance, seeded){
 /* --- the one place the balance sheet is allowed to move ----------------- */
 function post(d, tag){
   const dA = (d.cash||0) + (d.securities||0) + (d.grossLoans||0) - (d.allowance||0);
-  const dL = (d.deposits||0) + (d.subDebt||0) + (d.wholesale||0);
+  const dL = (d.deposits||0) + (d.subDebt||0) + (d.wholesale||0) + (d.interbank||0);
   const dE = (d.paidIn||0) + (d.retained||0);
   const drift = dA - dL - dE;
   if(Math.abs(drift) > 1e-6){
@@ -971,10 +1010,13 @@ function M(){
 
   const rwa = rwaCredit + g.securities*CFG.RW.securities;
   const assets = g.cash + g.securities + g.grossLoans - g.allowance;
-  const liabilities = g.deposits + g.subDebt + g.wholesale;
+  const liabilities = g.deposits + g.subDebt + g.wholesale + g.interbank;
   // reserve requirement is held against everything that can be withdrawn or
-  // refuse to roll — retail deposits and wholesale money alike
-  const funding = g.deposits + g.wholesale;
+  // refuse to roll — retail deposits, wholesale money and interbank borrowing
+  // alike. Interbank cash still helps in the moment (it is real cash against
+  // a real, immediate withdrawal demand) — it just is not a free fix to the
+  // reported ratio, since the draw adds to both sides at once.
+  const funding = g.deposits + g.wholesale + g.interbank;
   const equity = g.paidIn + g.retained;          // Tier 1
   // Basel-style: subordinated debt is Tier 2 capital, admissible only up to the
   // size of Tier 1. It props up the capital ratio but never cures insolvency.
@@ -982,7 +1024,7 @@ function M(){
   const capital = equity + tier2;
   _mCache = {
     assets, liabilities, equity, rwa, rwaCredit, tier1: equity, tier2, capital,
-    subDebt: g.subDebt, wholesale: g.wholesale, funding,
+    subDebt: g.subDebt, wholesale: g.wholesale, interbank: g.interbank, funding,
     wholeShare: funding > 0 ? g.wholesale/funding : 0,
     t1r: rwa > 0 ? equity/rwa : Infinity,
     cash: g.cash, securities: g.securities, grossLoans: g.grossLoans,
@@ -1131,6 +1173,8 @@ function limits(floors){
         car:Math.max(CFG.REQ_CAPITAL, S.policy.targetCapital), t1:CFG.REQ_TIER1 };
 }
 function capacityCheck(product, amount, floors){
+  if(S.reg.bailoutActive)
+    return { ok:false, why:"new lending is frozen under the terms of the government injection" };
   const m = M(), L = limits(floors);
   const isCard = product === "card";
   const draw  = isCard ? amount*CFG.CARD_CASH_DRAW : amount;
@@ -1537,15 +1581,38 @@ function treasuryOps(){
 }
 
 /* ============================= the regulator ============================ */
+// Called from monthClose, before the strike escalation, so a CoCo bought
+// while healthy can cure a breach in the same check that would otherwise
+// have counted it.
+function offerForbearance(){
+  S.reg.pendingForbearance = true;
+  S.speed = 0;
+  logEvent("Capital ratio breached the minimum. The regulator is offering a one-time forbearance window instead of the usual warning.", "warn");
+  showForbearanceModal();
+}
 function regulatorReview(){
+  checkCocoConversions();
   const m = M();
   if(m.tier1 <= 0){
     return gameOver("Regulatory seizure",
       "Equity fell to zero. The bank was insolvent and the regulator closed it the same day, without warning or a cure period. Subordinated debt is capital only while there is equity beneath it.");
   }
-  if(m.car < CFG.REQ_CAPITAL || m.t1r < CFG.REQ_TIER1){
+  if(S.reg.forbearanceActive){
+    if(m.car >= CFG.REQ_CAPITAL && m.t1r >= CFG.REQ_TIER1){
+      S.reg.forbearanceActive = false; S.reg.capStrikes = 0;
+      const early = S.day < S.reg.forbearanceDeadline;
+      logEvent(`Capital restored${early ? " ahead of the forbearance deadline" : " as the forbearance window closed"} — normal supervision resumes.`, "ok");
+      toast("Forbearance cleared", "Capital is back above the minimum.", "ok");
+    } else if(S.day >= S.reg.forbearanceDeadline){
+      return gameOver("Regulatory seizure",
+        `The forbearance window closed with the capital ratio still at ${pct(m.car)}, below the ${pct(CFG.REQ_CAPITAL)} minimum. There was no further warning this time — the charter was revoked immediately.`);
+    }
+    // else: still inside the window, still under the minimum — no strikes, no restriction, just waiting
+  } else if(m.car < CFG.REQ_CAPITAL || m.t1r < CFG.REQ_TIER1){
     S.reg.capStrikes++;
-    if(S.reg.capStrikes === 1){
+    if(S.reg.capStrikes === 1 && forbearanceEligible()){
+      offerForbearance();
+    } else if(S.reg.capStrikes === 1){
       S.rep = clamp(S.rep - 4, 0, 100);
       const which = m.t1r < CFG.REQ_TIER1 ? `Tier 1 ratio of ${pct(m.t1r)} is below the ${pct(CFG.REQ_TIER1)} minimum`
                                           : `total capital ratio of ${pct(m.car)} is below the ${pct(CFG.REQ_CAPITAL)} minimum`;
@@ -1666,8 +1733,10 @@ function raiseEquity(gross){
   if(!cap.ok) return false;
   gross = clamp(Math.round(gross), 25000, cap.max);
   const fee = Math.round(gross*cap.fee);
+  const preEquity = M().tier1;
   post({ cash: gross - fee, paidIn: gross, retained: -fee }, "equity-raise");
   acc("opex", fee);
+  dilute(gross, preEquity);
   const c = S.capital;
   c.lastRaise = S.day; c.raises++; c.raised += gross; c.raiseFees += fee;
   S.rep = clamp(S.rep + (cap.distress ? -3 : 1), 0, 100);
@@ -1734,6 +1803,191 @@ function callSubDebt(i){
   S.capital.tranches.splice(i, 1);
   logEvent(`Called ${fmtMoney(q.t.amount)} of ${rate(q.t.rate)} subordinated notes early — ${fmtMoney(q.premium)} call premium, saving ${fmtMoney(q.annualCoupon)} a year.`, "ok");
   toast("Notes called", `${fmtMoney(q.annualCoupon)}/yr of coupon retired. Capital ratio now ${pct(M().car)}.`, "ok");
+  bumpAll(); saveGame();
+  return true;
+}
+
+// Every share of new equity — a raise, a converted CoCo, a government
+// injection — comes from the same finite pie. Track the player's share of it
+// directly rather than only the dollar totals, so dilution is visible and
+// permanent, the way it is for a real founder.
+function dilute(investmentAmount, preMoneyEquity){
+  const pre = Math.max(1, preMoneyEquity);
+  S.capital.ownershipPct *= pre/(pre + Math.max(0, investmentAmount));
+}
+// A shared "what would this do to the ratios" preview, used by every capital
+// lever so the player commits with the number already in front of them
+// rather than discovering it after the fact.
+function ratioPreview(dTier1, dTier2, dRWA){
+  const m = M();
+  const t1After = m.tier1 + dTier1;
+  const tier2After = t1After > 0 ? Math.min(m.subDebt + dTier2, t1After) : 0;
+  const rwaAfter = Math.max(0, m.rwa + (dRWA||0));
+  return {
+    carBefore: m.car, carAfter: rwaAfter > 0 ? (t1After + tier2After)/rwaAfter : Infinity,
+    t1Before: m.t1r, t1After: rwaAfter > 0 ? t1After/rwaAfter : Infinity,
+  };
+}
+
+/* ========================= interbank borrowing ==========================
+   A short-term liquidity bridge, not a structural funding source: 1-30 days,
+   priced off how far the reserve ratio sits below the requirement rather
+   than off general capital distress, and available even to a bank wholesale
+   lenders have already turned away. It buys time, not a fixed ratio — the
+   cash it raises helps against an immediate withdrawal demand, but the draw
+   itself counts toward the reserve requirement too, so it is not free.
+   ===================================================================== */
+function interbankTerms(termDays){
+  const m = M();
+  const shortfall = Math.max(0, CFG.REQ_RESERVE*m.funding - m.cash);
+  let spread = CFG.INTERBANK_BASE_SPREAD;
+  if(m.rr < CFG.REQ_RESERVE) spread += (CFG.REQ_RESERVE - Math.max(0, m.rr))*18;
+  if(m.car < CFG.REQ_CAPITAL || m.t1r < CFG.REQ_TIER1) spread += 2.0;
+  if(S.reg.restricted) spread += 1.5;
+  if(S.rep < 35) spread += 1.0;
+  const termF = { 1:0.4, 7:0.7, 14:0.85, 30:1.0 }[termDays] || 1.0;
+  const r = round2(S.macro.rate + spread*termF);
+  const outstanding = S.capital.interbank.reduce((n,w)=>n+w.amount, 0);
+  const target = Math.max(shortfall*CFG.INTERBANK_SHORTFALL_MULT, 50000);
+  const max = Math.max(0, Math.floor((target - outstanding)/5000)*5000);
+  return { rate: r, spread, shortfall, max, ok: S.rep >= 12 && max >= 5000 };
+}
+function borrowInterbank(amount, termDays){
+  if(S.over) return false;
+  if(!CFG.INTERBANK_TERMS.includes(termDays)) termDays = CFG.INTERBANK_TERMS[0];
+  const t = interbankTerms(termDays);
+  if(!t.ok) return false;
+  amount = clamp(Math.round(amount), 5000, t.max);
+  post({ cash: amount, interbank: amount }, "interbank-draw");
+  S.capital.interbank.push({ amount, rate: t.rate, term: termDays, matures: S.day + termDays });
+  S.capital.borrowCount++;
+  logEvent(`Drew ${fmtMoney(amount)} of ${termDays}-day interbank funding at ${rate(t.rate)}.`, "info");
+  toast("Interbank cash drawn", `${fmtMoney(amount)} in hand. Reserve ratio now ${pct(M().rr)}.`, "ok");
+  bumpAll(); saveGame();
+  return true;
+}
+// Checked daily, not monthly — a 1-day facility that only settles at the next
+// month-close is not actually a 1-day facility.
+function processInterbank(){
+  if(!S.capital.interbank.length) return true;
+  let coupon = 0;
+  for(const w of S.capital.interbank) coupon += w.amount*w.rate/36000;
+  if(coupon > 0.005){
+    if(!ensureCash(coupon)) return liquidityFailure(coupon);
+    income("intInterbank", coupon, { cash:-coupon, retained:-coupon }, "interbank-interest");
+  }
+  const keep = [];
+  for(const w of S.capital.interbank){
+    if(S.day < w.matures){ keep.push(w); continue; }
+    if(!ensureCash(w.amount)) return liquidityFailure(w.amount);
+    post({ cash:-w.amount, interbank:-w.amount }, "interbank-repay");
+  }
+  S.capital.interbank = keep;
+  return true;
+}
+
+/* ============================ CoCo bonds =================================
+   Debt while the bank is healthy, at a real coupon premium for the privilege
+   — and equity, automatically and irreversibly, the moment the total capital
+   ratio crosses the trigger the player chose at issuance. No click required
+   in the moment it matters, which is the entire point: this is the
+   plan-ahead instrument, not the scramble-in-a-crisis one.
+   ===================================================================== */
+function cocoTerms(trigger){
+  const sub = subDebtTerms();
+  const t = clamp(trigger==null ? CFG.COCO_TRIGGER_DEFAULT : trigger, CFG.COCO_TRIGGER_MIN, CFG.COCO_TRIGGER_MAX);
+  const m = M();
+  const closeness = clamp((t - CFG.REQ_CAPITAL)/(CFG.COCO_TRIGGER_MAX - CFG.REQ_CAPITAL), 0, 1);
+  const rate_ = round2(sub.rate + CFG.COCO_PREMIUM + closeness*1.5);
+  const max = Math.max(0, Math.max(0, m.tier1) - S.gl.subDebt);
+  return { rate: rate_, trigger: t, max: Math.floor(max/1000)*1000, ok: sub.ok };
+}
+function issueCoco(amount, trigger){
+  const t = cocoTerms(trigger);
+  if(!t.ok) return false;
+  amount = clamp(Math.round(amount), 25000, t.max);
+  post({ cash: amount, subDebt: amount }, "coco-issue");
+  S.capital.cocos.push({ amount, rate: t.rate, trigger: t.trigger, matures: S.day + CFG.SUB_TERM*360, issued: S.day });
+  logEvent(`Issued ${fmtMoney(amount)} of contingent convertible notes at ${rate(t.rate)}, converting to equity if total capital falls below ${pct(t.trigger)}.`, "info");
+  toast("CoCo notes issued", `${fmtMoney(amount)} outstanding at ${rate(t.rate)}. Converts automatically at ${pct(t.trigger)}.`, "ok");
+  bumpAll(); saveGame();
+  return true;
+}
+// Runs inside the regulator check, before the strike escalation, so a CoCo
+// issued while healthy can head off a breach it was bought to prevent.
+function checkCocoConversions(){
+  if(!S.capital.cocos.length) return;
+  const still = [];
+  for(const c of S.capital.cocos){
+    const m = M();
+    if(m.car >= c.trigger){ still.push(c); continue; }
+    post({ subDebt:-c.amount, paidIn:c.amount }, "coco-convert");
+    dilute(c.amount, m.tier1);
+    S.capital.cocoConversions++; S.capital.cocoConverted += c.amount;
+    _mv++;
+    logEvent(`${fmtMoney(c.amount)} of CoCo notes converted to equity — the total capital ratio had fallen to ${pct(m.car)}, below the ${pct(c.trigger)} trigger.`, "warn");
+    toast("CoCo notes converted", `${fmtMoney(c.amount)} of debt became equity. Capital ratio now ${pct(M().car)}.`, "warn");
+  }
+  S.capital.cocos = still;
+}
+
+/* ======================= regulatory forbearance ==========================
+   Offered once, at the first capital breach, instead of the standard
+   warning. It buys a fixed window with no lending restriction — but it is
+   not repeatable, and missing the deadline is worse than never asking:
+   seizure with no further warning, skipping the usual second-strike grace.
+   ===================================================================== */
+function forbearanceEligible(){
+  return !S.reg.forbearanceUsed && !S.reg.forbearanceActive;
+}
+function acceptForbearance(){
+  if(!forbearanceEligible()) return false;
+  S.reg.forbearanceUsed = true;
+  S.reg.forbearanceActive = true;
+  S.reg.forbearanceDeadline = S.day + CFG.FORBEARANCE_DAYS;
+  S.reg.capStrikes = 0;
+  logEvent(`Regulator granted forbearance — ${CFG.FORBEARANCE_DAYS} days to restore the capital ratio with no lending restriction. Missing the deadline means immediate seizure.`, "warn");
+  bumpAll(); saveGame();
+  return true;
+}
+function declineForbearance(){
+  S.reg.forbearanceUsed = true;   // the offer does not come twice either way
+  bumpAll(); saveGame();
+  return true;
+}
+
+/* =================== emergency government injection ======================
+   Last resort: only on offer once the bank is already under a consent order
+   and still below the capital minimum — one strike from seizure. It works,
+   but on punitive terms: the stake is priced as if the bank's equity were
+   worth half what it is, dividends and new lending are frozen for two years,
+   and the bank carries the mark for good — even a full recovery does not
+   erase it.
+   ===================================================================== */
+function bailoutEligible(){
+  const m = M();
+  return !S.reg.bailoutActive && S.reg.restricted && (m.car < CFG.REQ_CAPITAL || m.t1r < CFG.REQ_TIER1);
+}
+function bailoutQuote(){
+  const m = M(), L = limits(false);
+  const needCar = Math.max(0, L.car*m.rwa - m.capital);
+  const needT1 = Math.max(0, CFG.REQ_TIER1*m.rwa - m.tier1);
+  const amount = Math.max(needCar, needT1, 250000);
+  return { amount: Math.ceil(amount/25000)*25000, ok: bailoutEligible() };
+}
+function requestBailout(){
+  const q = bailoutQuote();
+  if(!q.ok) return false;
+  const preEquity = M().tier1;
+  post({ cash: q.amount, paidIn: q.amount }, "gov-injection");
+  dilute(q.amount, preEquity*CFG.BAILOUT_VALUATION_DISCOUNT);
+  S.reg.bailoutActive = true; S.reg.bailoutUntil = S.day + CFG.BAILOUT_DAYS;
+  S.reg.restricted = false; S.reg.capStrikes = 0;
+  S.capital.bailoutReceived += q.amount;
+  S.stats.everBailedOut = true;
+  S.rep = clamp(S.rep - 15, 0, 100);
+  logEvent(`Emergency government capital injection: ${fmtMoney(q.amount)}, in exchange for a warrant over the bank. Dividends and new-asset growth are frozen for ${Math.round(CFG.BAILOUT_DAYS/360*10)/10} years. This does not come off the record.`, "bad");
+  toast("Government injection", `${fmtMoney(q.amount)} received. The bank survives, but on the government's terms.`, "warn");
   bumpAll(); saveGame();
   return true;
 }
@@ -1849,7 +2103,7 @@ function capitalAfterPayout(x){
 }
 function dividendCapacity(){
   const m = M(), L = limits(false);
-  const blocked = S.reg.restricted || m.car < L.car || m.t1r < CFG.REQ_TIER1 + 0.02 || m.rr < L.rr;
+  const blocked = S.reg.restricted || S.reg.bailoutActive || m.car < L.car || m.t1r < CFG.REQ_TIER1 + 0.02 || m.rr < L.rr;
   let lo = 0, hi = Math.max(0, m.tier1);
   for(let i=0;i<44;i++){
     const mid = (lo + hi)/2;
@@ -2042,6 +2296,7 @@ function reputationTarget(){
   t += netIncomeOf(S.is.mtd) > 0 ? 3 : -3;
   if(M().nplRate > 0.06) t -= 6;
   if(S.reg.restricted) t -= 10;
+  if(S.stats.everBailedOut) t -= CFG.BAILOUT_REP_PENALTY;
   const shut = ["checking","savings","cd"].filter(k => !S.policy.depositProducts[k]).length;
   t -= shut*2.5;
   return clamp(t, 0, 100);
@@ -2078,6 +2333,28 @@ function monthClose(){
     S.capital.tranches = S.capital.tranches.filter(t => S.day < t.matures);
   }
 
+  // CoCo notes: identical coupon and maturity mechanics to plain subordinated
+  // debt. Conversion itself is checked separately, inside the regulator
+  // review, since it is triggered by the ratio rather than by time.
+  if(S.capital.cocos.length){
+    let coupon = 0;
+    for(const c of S.capital.cocos) coupon += c.amount*c.rate/1200;
+    if(coupon > 0){
+      if(!ensureCash(coupon)) return liquidityFailure(coupon);
+      income("intSub", coupon, { cash:-coupon, retained:-coupon }, "coco-coupon");
+    }
+    for(const c of S.capital.cocos){
+      if(S.day < c.matures) continue;
+      if(!ensureCash(c.amount)){
+        return gameOver("Default on CoCo notes",
+          `${fmtMoney(c.amount)} of contingent convertible notes matured without ever converting, and the bank could not repay them. Noteholders put the charter into receivership.`);
+      }
+      post({ cash:-c.amount, subDebt:-c.amount }, "coco-repay");
+      logEvent(`Repaid ${fmtMoney(c.amount)} of maturing CoCo notes — the trigger was never crossed.`, "info");
+    }
+    S.capital.cocos = S.capital.cocos.filter(c => S.day < c.matures);
+  }
+
   // wholesale funding: interest, then roll or repay whatever has matured
   if(S.capital.wholesale.length){
     let coupon = 0;
@@ -2107,9 +2384,11 @@ function monthClose(){
     if(pulled > 0) logEvent(`${fmtMoney(pulled)} of wholesale funding was pulled — lenders would not roll it.`, "bad");
   }
 
-  // loan-loss provisioning: top the allowance up to one year of expected loss
+  // loan-loss provisioning: move the allowance toward one year of expected
+  // loss, not straight to it — see PROVISION_UP/DOWN above.
   const req = M().requiredAllowance;
-  const delta = req - S.gl.allowance;
+  const gap = req - S.gl.allowance;
+  const delta = gap * (gap >= 0 ? CFG.PROVISION_UP : CFG.PROVISION_DOWN);
   if(Math.abs(delta) > 0.01) income("provision", delta, { allowance:delta, retained:-delta }, "provision");
 
   // operating costs
@@ -2218,6 +2497,9 @@ function stepDay(){
     }
   }
 
+  // --- interbank borrowing: a short facility, serviced daily -------------
+  if(!processInterbank()) return;
+
   // --- liquidity stress ---------------------------------------------------
   if(S.run.active){ if(!runDay()) return; }
   else {
@@ -2321,7 +2603,17 @@ function migrate(o){
   // existing holding starts with neither a gain nor a loss
   if(o.gl.secBookYield == null) o.gl.secBookYield = Math.max(0.2, (o.macro ? o.macro.rate : 4) - 0.5);
   o.gl.wholesale = o.gl.wholesale || 0;
+  o.gl.interbank = o.gl.interbank || 0;
   if(!o.policy.depositProducts) o.policy.depositProducts = { checking:true, savings:true, cd:true };
+  if(o.reg){
+    if(o.reg.forbearanceUsed == null) o.reg.forbearanceUsed = false;
+    if(o.reg.forbearanceActive == null) o.reg.forbearanceActive = false;
+    if(o.reg.forbearanceDeadline === undefined) o.reg.forbearanceDeadline = null;
+    if(o.reg.bailoutActive == null) o.reg.bailoutActive = false;
+    if(o.reg.bailoutUntil === undefined) o.reg.bailoutUntil = null;
+    if(o.reg.pendingForbearance == null) o.reg.pendingForbearance = false;
+  }
+  if(o.stats && o.stats.everBailedOut == null) o.stats.everBailedOut = false;
   if(o.macro){
     if(o.macro.repriceMonths == null) o.macro.repriceMonths = CFG.RATE_REPRICE_MONTHS;
     if(o.macro.monthsSinceReprice == null) o.macro.monthsSinceReprice = 0;
@@ -2331,6 +2623,9 @@ function migrate(o){
   else for(const k in bc) if(o.capital[k] === undefined) o.capital[k] = bc[k];
   if(!Array.isArray(o.capital.tranches)) o.capital.tranches = [];
   if(!Array.isArray(o.capital.wholesale)) o.capital.wholesale = [];
+  if(!Array.isArray(o.capital.cocos)) o.capital.cocos = [];
+  if(!Array.isArray(o.capital.interbank)) o.capital.interbank = [];
+  if(typeof o.capital.ownershipPct !== "number") o.capital.ownershipPct = 1;
   o.is = o.is || {};
   for(const k of ["mtd","last","ytd","life"]){
     if(!o.is[k]) o.is[k] = blankIS();
@@ -3176,7 +3471,8 @@ function buildMarketing(){
 
 /* ------------------------------ treasury ------------------------------ */
 const TR = { lineThresh: 30, saleProduct: "card", saleShare: 20,
-             wholeTerm: 6, depSaleKind: "savings", depSaleShare: 25 };
+             wholeTerm: 6, depSaleKind: "savings", depSaleShare: 25,
+             ibTerm: 7, cocoTrigger: CFG.COCO_TRIGGER_DEFAULT*100 };
 
 function buildTreasury(){
   const m = M(), L = limits(false);
@@ -3189,6 +3485,10 @@ function buildTreasury(){
         (m.tier2 < m.subDebt ? ` <span class="dim">(${fmtCompact(m.subDebt)} issued, capped at Tier 1)</span>` : "")) +
     row("Total regulatory capital", fmtMoney(m.capital,0), "total") +
     row("Risk-weighted assets", fmtMoney(m.rwa,0)) +
+    (S.capital.ownershipPct < 0.999
+      ? row("Your ownership stake", pct(S.capital.ownershipPct,1),
+            S.capital.ownershipPct < 0.5 ? "bad" : "warn")
+      : row("Your ownership stake", "100%", "muted")) +
     headRow("Ratios") +
     row("Total capital ratio · min " + pct(CFG.REQ_CAPITAL,0), pct(m.car),
         m.car < CFG.REQ_CAPITAL ? "bad" : m.car < L.car ? "warn" : "good") +
@@ -3307,12 +3607,14 @@ function buildTreasury(){
     row("Placement fee", pct(rc.fee,0) + (rc.distress ? " — rescue terms" : "")) +
     row("Trailing 12-month net income", fmtMoney(rc.trailing,0), sign(rc.trailing)) +
     row("Raises completed", `${S.capital.raises} · ${fmtCompact(S.capital.raised)} gross`) +
+    row("Your ownership today", pct(S.capital.ownershipPct,1)) +
     (rc.wait > 0 ? row("Next raise available in", rc.wait + " days", "warn") : "") +
     `<div style="display:flex;gap:7px;align-items:flex-end;margin-top:10px">
       <label class="field" style="flex:1;margin:0"><span>Gross proceeds</span>
         <input type="number" id="trRaiseAmt" step="25000" min="25000" max="${rc.max}" value="${suggest(rc.max)}"></label>
       <button class="btn primary" id="btnRaise" ${rc.ok?"":"disabled"}>Raise equity</button>
-    </div>` +
+    </div>
+    <div class="hint" id="trRaisePreview" style="margin-top:6px"></div>` +
     (rc.ok ? "" : `<div class="hint" style="color:var(--warn)">${
       rc.wait > 0 ? "Investors will not come back this soon after the last round."
       : S.rep < 20 ? "Reputation is too low for anyone to underwrite a placement."
@@ -3401,6 +3703,11 @@ function buildTreasury(){
     row("Sales completed", S.capital.saleCount) +
     row("Lifetime sale proceeds", fmtMoney(S.capital.saleProceeds,0), "muted"));
   updateSalePreview();
+
+  buildInterbank();
+  buildCoco();
+  buildRegSupport();
+  updateRaisePreview();
 }
 function updateLinePreview(){
   const el = $("trLinePreview"); if(!el) return;
@@ -3419,6 +3726,116 @@ function updateSalePreview(){
        <b>${fmtCompact(q.proceeds)}</b> in cash at a <b>${pct(q.disc)}</b> discount, freeing roughly
        <b>${fmtCompact(q.rwaFreed)}</b> of risk-weighted assets.`
     : `Nothing to sell in that portfolio.`;
+}
+
+function updateRaisePreview(){
+  const el = $("trRaisePreview"); const inp = $("trRaiseAmt"); if(!el || !inp) return;
+  const rc = raiseCapacity();
+  const gross = clamp(+inp.value || 0, 0, rc.max);
+  const fee = Math.round(gross*rc.fee);
+  const prev = ratioPreview(gross - fee, 0, 0);
+  const preOwn = S.capital.ownershipPct;
+  const postOwn = gross > 0 ? preOwn*M().tier1/(M().tier1 + gross) : preOwn;
+  el.innerHTML = gross > 0
+    ? `Moves total capital from <b>${pct(prev.carBefore)} → ${pct(prev.carAfter)}</b>
+       (Tier 1 ${pct(prev.t1Before)} → ${pct(prev.t1After)}). Your ownership goes
+       <b>${pct(preOwn,1)} → ${pct(postOwn,1)}</b>.`
+    : "";
+}
+
+/* --------------------------- interbank borrowing ------------------------ */
+function buildInterbank(){
+  const m = M();
+  const outstanding = S.capital.interbank.reduce((n,w)=>n+w.amount, 0);
+  const t = interbankTerms(TR.ibTerm);
+  setHTML("trInterbank",
+    `<div class="hint" style="margin-bottom:9px">A short liquidity bridge, not a funding strategy: 1 to 30 days,
+      priced off how far your reserve ratio sits below the requirement. Available even when wholesale lenders
+      have turned you away — but the draw counts toward the reserve requirement too, so it buys time against an
+      immediate withdrawal demand, not a fixed reading on the ratio.</div>` +
+    row("Reserve ratio", pct(m.rr), m.rr < CFG.REQ_RESERVE ? "bad" : "") +
+    row("Shortfall to the 10% minimum", fmtMoney(t.shortfall,0), t.shortfall>0?"warn":"muted") +
+    row("Outstanding", fmtMoney(outstanding,0) + (S.capital.interbank.length ? ` · ${S.capital.interbank.length} draw${S.capital.interbank.length===1?"":"s"}` : "")) +
+    row("Rate offered", rate(t.rate) + `<span class="dim"> · policy ${rate(S.macro.rate)} + ${t.spread.toFixed(2)}</span>`) +
+    row("Available to draw", fmtMoney(t.max,0)) +
+    (S.capital.interbank.length
+      ? `<div class="rule"></div>` + S.capital.interbank.map(w =>
+          row(`${fmtCompact(w.amount)} at ${rate(w.rate)}`, `${w.term}d · matures ${fmtDate(w.matures)}`, "muted", true)).join("")
+      : "") +
+    `<div style="display:flex;gap:7px;align-items:flex-end;margin-top:10px">
+      <label class="field" style="flex:1;margin:0"><span>Draw</span>
+        <input type="number" id="trIbAmt" step="5000" min="5000" max="${t.max}" value="${Math.min(t.max, Math.max(5000, Math.round(t.max/2/5000)*5000))}"></label>
+      <label class="field" style="width:90px;margin:0"><span>Term</span>
+        <select id="trIbTerm">${CFG.INTERBANK_TERMS.map(d=>`<option value="${d}"${d===TR.ibTerm?" selected":""}>${d}d</option>`).join("")}</select></label>
+      <button class="btn" id="btnIb" ${t.ok?"":"disabled"}>Draw</button>
+    </div>` +
+    (t.ok ? "" : `<div class="hint" style="color:var(--warn)">${
+      S.rep < 12 ? "Reputation is too poor for any counterparty to lend overnight money."
+      : "Already drawn as much as the current shortfall justifies."}</div>`));
+}
+
+/* -------------------------------- CoCo bonds ----------------------------- */
+function buildCoco(){
+  const m = M();
+  const t = cocoTerms(TR.cocoTrigger/100);
+  const outstanding = S.capital.cocos.reduce((n,c)=>n+c.amount, 0);
+  setHTML("trCoco",
+    `<div class="hint" style="margin-bottom:9px">Debt while you are healthy, at a real premium for the privilege —
+      and equity, automatically, the instant the total capital ratio crosses the trigger you choose now. No click
+      needed in the moment it matters; that is the entire point. A higher trigger converts sooner (more
+      protective) and costs more; matured without ever converting, it repays like ordinary subordinated debt.</div>` +
+    row("Outstanding", fmtMoney(outstanding,0) + (S.capital.cocos.length ? ` · ${S.capital.cocos.length} tranche${S.capital.cocos.length===1?"":"s"}` : "")) +
+    row("Admissible headroom", fmtMoney(t.max,0)) +
+    row("Coupon at this trigger", rate(t.rate) + `<span class="dim"> · plain sub debt would be ${rate(subDebtTerms().rate)}</span>`) +
+    (S.capital.cocos.length
+      ? `<div class="rule"></div>` + S.capital.cocos.map(c =>
+          row(`${fmtCompact(c.amount)} at ${rate(c.rate)}`, `converts below ${pct(c.trigger)} · matures ${fmtDate(c.matures)}`, "muted", true)).join("")
+      : "") +
+    `<label class="field" style="margin-top:10px"><span>Conversion trigger — total capital ratio <b id="trCocoTrigV">${TR.cocoTrigger}%</b></span>
+       <input type="range" id="trCocoTrig" min="${CFG.COCO_TRIGGER_MIN*100}" max="${CFG.COCO_TRIGGER_MAX*100}" step="0.5" value="${TR.cocoTrigger}"></label>
+     <div style="display:flex;gap:7px;align-items:flex-end;margin-top:6px">
+      <label class="field" style="flex:1;margin:0"><span>Issue amount</span>
+        <input type="number" id="trCocoAmt" step="25000" min="25000" max="${t.max}" value="${Math.max(25000, Math.min(t.max, Math.round(t.max/2/25000)*25000))}"></label>
+      <button class="btn" id="btnCoco" ${t.ok?"":"disabled"}>Issue CoCo notes</button>
+    </div>` +
+    (t.ok ? "" : `<div class="hint" style="color:var(--warn)">${
+      m.tier1 <= 0 ? "There is no Tier 1 for a CoCo to convert into."
+      : S.rep < 25 ? "No one will buy contingent notes from a bank with this reputation."
+      : "Tier 2 is already admitted up to the size of Tier 1."}</div>`));
+}
+
+/* ----------------- regulatory standing & emergency support --------------- */
+function buildRegSupport(){
+  const m = M();
+  const fb = S.reg;
+  let fbStatus;
+  if(fb.forbearanceActive) fbStatus = `Active — must clear the ${pct(CFG.REQ_CAPITAL,0)} minimum by ${fmtDate(fb.forbearanceDeadline)} or the charter is revoked immediately.`;
+  else if(fb.forbearanceUsed) fbStatus = "Already used once — not offered again.";
+  else fbStatus = "Available — offered automatically on the first capital breach.";
+  const bq = bailoutQuote();
+  setHTML("trReg",
+    headRow("Regulatory forbearance — one-time, offered only at the first breach") +
+    row("Status", fbStatus, fb.forbearanceActive ? "warn" : fb.forbearanceUsed ? "muted" : "good") +
+    row("Capital strikes on record", `${S.reg.capStrikes} / 3`, S.reg.capStrikes ? "warn" : "") +
+    row("Lending restricted (consent order)", S.reg.restricted ? "yes" : "no", S.reg.restricted ? "bad" : "good") +
+    `<div class="rule"></div>` +
+    headRow("Emergency government capital injection — last resort") +
+    row("Eligible now", bailoutEligible() ? "yes — one strike from seizure" : "no", bailoutEligible() ? "bad" : "muted") +
+    (bailoutEligible()
+      ? row("Would inject", fmtMoney(bq.amount,0)) +
+        `<div class="appnote bad" style="margin:8px 0">Government takes a warrant priced as if your equity were worth
+          half book value. Dividends and new lending freeze for ${Math.round(CFG.BAILOUT_DAYS/360*10)/10} years.
+          Reputation takes a lasting hit that never fully clears — even full recovery keeps the mark. This is not
+          a clean save.</div>
+         <button class="btn danger" id="btnBailout" style="width:100%">Request emergency injection</button>`
+      : `<div class="hint">Only offered once the bank is already under a consent order and still below the capital
+          minimum. It exists so the very worst case is a bad ending, not always a lost charter — it is never a
+          decision to make lightly.</div>`) +
+    (S.stats.everBailedOut
+      ? `<div class="rule"></div>` + row("Government support received", fmtMoney(S.capital.bailoutReceived,0), "muted") +
+        `<div class="hint">This bank has taken a government injection. The reputational mark is permanent for the
+          life of this charter.</div>`
+      : ""));
 }
 
 /* ----------------------------- financials ----------------------------- */
@@ -3714,10 +4131,52 @@ function renderTick(now){
     else if(t === "financials" && now - lastFin > 900){ lastFin = now; buildFinancials(); }
   }
 }
-function setSpeed(n){ S.speed = n; DIRTY.kpi = true; if(activeTab === "settings") buildSettings(); }
+function setSpeed(n){
+  if(S.reg.pendingForbearance && n !== 0) return;   // resolve the offer first
+  S.speed = n; DIRTY.kpi = true; if(activeTab === "settings") buildSettings();
+}
 
 /* -------------------------------- modals ------------------------------- */
 function closeModal(){ $("modalRoot").innerHTML = ""; }
+function showForbearanceModal(){
+  const m = M();
+  $("modalRoot").innerHTML = `<div class="scrim"><div class="modal">
+    <div class="mh"><h2>Capital breach — regulator's offer</h2>
+      <p>${fmtDate(S.day)}. Total capital ratio ${pct(m.car)}, Tier 1 ${pct(m.t1r)} — below the
+        ${pct(CFG.REQ_CAPITAL)} / ${pct(CFG.REQ_TIER1)} minimums. Normally this month draws a warning and,
+        two months from now, a lending restriction. The regulator is offering something else instead —
+        once, and only now.</p></div>
+    <div class="mb">
+      <div class="diffopts">
+        <div class="diffopt sel" id="fbAccept">
+          <div class="dt"><span>Accept forbearance</span><span class="dim">recommended if you have a real plan</span></div>
+          <div class="dd">${CFG.FORBEARANCE_DAYS} days with no lending restriction and no warning strike, to actually
+            fix the ratio — raise capital, shrink risk-weighted assets, sell a book, whatever it takes.</div>
+          <div class="dn">Miss the deadline still below the minimum and the charter is revoked immediately —
+            no second warning, no consent order first. This offer will not come again.</div>
+        </div>
+        <div class="diffopt" id="fbDecline">
+          <div class="dt"><span>Decline</span><span class="dim">keep the standard process</span></div>
+          <div class="dd">Proceed under normal supervision: a warning now, a consent order on the next breach,
+            seizure on the one after that — the usual three strikes, at your own pace.</div>
+          <div class="dn">Also permanent: this offer will not come back if you change your mind later.</div>
+        </div>
+      </div>
+    </div>
+    <div class="mf"><button class="btn primary" id="fbGo">Confirm</button></div>
+  </div></div>`;
+  let choice = "accept";
+  const mark = () => { $("fbAccept").classList.toggle("sel", choice==="accept");
+                       $("fbDecline").classList.toggle("sel", choice==="decline"); };
+  $("fbAccept").onclick = () => { choice="accept"; mark(); };
+  $("fbDecline").onclick = () => { choice="decline"; mark(); };
+  $("fbGo").onclick = () => {
+    S.reg.pendingForbearance = false;
+    if(choice === "accept") acceptForbearance(); else declineForbearance();
+    closeModal();
+    bumpAll();
+  };
+}
 function showNewBank(){
   let diff = "denovo";
   const root = $("modalRoot");
@@ -3774,6 +4233,8 @@ function showGameOver(){
         <div class="gostat"><div class="k">Lifetime net income</div><div class="v">${fmtCompact(netIncomeOf(S.is.life))}</div></div>
         <div class="gostat"><div class="k">Dividends taken out</div><div class="v">${fmtCompact(S.capital.dividends)}</div></div>
         <div class="gostat"><div class="k">Outside capital raised</div><div class="v">${fmtCompact(S.capital.raised)}</div></div>
+        <div class="gostat"><div class="k">Ownership retained</div><div class="v">${pct(S.capital.ownershipPct,1)}</div></div>
+        <div class="gostat"><div class="k">Government support</div><div class="v">${S.stats.everBailedOut ? fmtCompact(S.capital.bailoutReceived)+" (marked)" : "never needed"}</div></div>
         <div class="gostat"><div class="k">Largest size reached</div><div class="v">${sizeTier(o.peakAssets)}</div></div>
       </div>
       <div class="hint" style="margin-top:10px">The failed bank stays on screen behind this dialog if you want to
@@ -3845,6 +4306,13 @@ function wire(){
       setText("trDepShareV", TR.depSaleShare + "%");
       return;
     }
+    if(e.target.id === "trCocoTrig"){
+      TR.cocoTrigger = +e.target.value;
+      setText("trCocoTrigV", TR.cocoTrigger.toFixed(1) + "%");
+      buildCoco();
+      return;
+    }
+    if(e.target.id === "trRaiseAmt"){ updateRaisePreview(); return; }
     if(e.target.id === "trSaleShare"){
       TR.saleShare = +e.target.value;
       setText("trSaleShareV", TR.saleShare + "%");
@@ -3926,6 +4394,25 @@ function wire(){
       buildTreasury();
       return;
     }
+    if(id === "btnIb"){
+      if(!S.over) borrowInterbank(+$("trIbAmt").value, TR.ibTerm);
+      buildTreasury();
+      return;
+    }
+    if(id === "btnCoco"){
+      if(!S.over) issueCoco(+$("trCocoAmt").value, TR.cocoTrigger/100);
+      buildTreasury();
+      return;
+    }
+    if(id === "btnBailout"){
+      if(!S.over){
+        const q = bailoutQuote();
+        if(confirm(`Request ${fmtMoney(q.amount)} from the government? The stake is priced at half book value, dividends and new lending freeze for ${Math.round(CFG.BAILOUT_DAYS/360*10)/10} years, and the mark never comes off — even a full recovery.`))
+          requestBailout();
+      }
+      buildTreasury();
+      return;
+    }
     const sp = e.target.closest("[data-speed2]");
     if(sp){ setSpeed(+sp.dataset.speed2); return; }
     if(e.target.id === "btnAudit"){ refreshDev(); return; }
@@ -3949,6 +4436,7 @@ function wire(){
   main.addEventListener("change", e => {
     if(e.target.id === "trSaleProduct"){ TR.saleProduct = e.target.value; updateSalePreview(); return; }
     if(e.target.id === "trWholeTerm"){ TR.wholeTerm = +e.target.value; return; }
+    if(e.target.id === "trIbTerm"){ TR.ibTerm = +e.target.value; buildTreasury(); return; }
     if(e.target.id === "trDepKind"){ TR.depSaleKind = e.target.value; buildTreasury(); return; }
     if(e.target.id === "trDepShare"){ TR.depSaleShare = +e.target.value; buildTreasury(); return; }
     if(e.target.id === "setPauseBlur"){ S.pauseOnBlur = e.target.checked; saveGame(); }
@@ -3993,7 +4481,8 @@ function wire(){
   wire();
   if(loadGame()){
     setTab("overview");
-    toast("Welcome back", `${S.bankName}, ${fmtDate(S.day)}. Resumed paused — press space or 1× to continue.`, "ok");
+    if(S.reg.pendingForbearance) showForbearanceModal();
+    else toast("Welcome back", `${S.bankName}, ${fmtDate(S.day)}. Resumed paused — press space or 1× to continue.`, "ok");
   } else {
     newGame("Reserve Trust", "denovo");   // placeholder so the UI has state behind the dialog
     S.speed = 0;

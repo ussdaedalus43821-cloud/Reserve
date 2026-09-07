@@ -221,6 +221,98 @@ Saves live in `localStorage`, which is per-origin and per-device — a bank star
 appear on a phone. Move one across with **Settings → Export save**, then **Import save** on the other
 device.
 
+## Why profit didn't happen, and what changed
+
+A month-by-month trace of a de novo bank playing normally — reasonable underwriting, no player
+mismanagement — found the balance sheet economics were sound (net interest margin ran 6-7% annualised,
+comfortably clearing overhead and steady-state provisioning) but the P&L was not: two out of five years
+showed a single catastrophic month where **loan-loss provisioning alone exceeded 200% of that year's
+entire interest income**, or in the opposite direction, a release worth 127% of it. Neither was driven by
+an actual change in defaults — no extra charge-offs happened either month.
+
+The cause was the provisioning mechanic itself: each month the allowance was topped up **instantly and
+completely** to one year of expected loss, and expected loss is multiplied by a macro factor that jumps
+2.5× the moment the economy flips to recession (and drops to 0.6× on a flip to boom) — regimes that can
+last as little as one month before flipping back. A bank could take a six-figure provisioning hit the
+month a recession lands, then release most of it back the very next month when conditions normalise,
+purely as a mark-to-model artifact with no defaults behind either number. Traced directly: a $95k
+requirement one month, ~$106k allowance carried into the next, then a forced $64k release when the
+economy immediately reverted. That whipsaw — not underpriced loans, not an overtuned PD table, not the
+capital floor — is what made an otherwise sound bank show a lost or wildly flattered year on macro-timing
+luck alone, and repeated capital-ratio pressure was consistently the *downstream* symptom of a bank that
+had just taken one of these hits and couldn't rebuild equity fast enough afterward.
+
+The fix left the credit-risk model itself untouched (same PD table, same LGD, same macro multipliers) and
+changed only how fast the allowance is allowed to move toward its target: 45% of a growing gap closes per
+month, 18% of a shrinking one — quick to build reserves, slow to release them, the same asymmetry real
+provisioning models use. Verified against 160 bank-years across 20 random seeds of ordinary play: negative
+years dropped to 3.1%, worst single year a survivable loss rather than a wipeout, and a genuinely
+*sustained* 18-month recession still cuts net income roughly in half immediately and stays elevated
+throughout — the real risk survived; only the one-month mark-to-model artifact is gone.
+
+## Capital, liquidity, and the second-chance levers
+
+Even with the provisioning fix, a bank can still take a real hit — a concentrated bad cohort, a written-off
+loan book, simple overreach. Previously the only response to a capital squeeze was to stop lending and
+wait. Five levers, most on the Treasury tab, give the player real, costed choices instead — verified,
+across 120 bank-years of ordinary play, to never trigger on their own: none of them fire for a bank that
+never breaches a minimum or never chooses to issue one.
+
+**Capital raise** (existing lever, now tracks what it costs). Every raise dilutes the player's ownership
+stake — `newOwnership = oldOwnership × preRaiseEquity ÷ (preRaiseEquity + grossRaised)` — shown on the
+Treasury capital card and on the game-over summary. The raise card now previews the exact before/after
+effect live as the amount changes: *"moves total capital from 22.5% → 26.3%, your ownership from 100% →
+84.8%"* — before you commit, not after.
+
+**Interbank borrowing.** A short liquidity bridge, not a funding strategy: 1, 7, 14, or 30 days, priced
+off how far the reserve ratio sits below its requirement specifically (not general distress), and
+available even to a bank wholesale lenders have already turned away. Serviced daily rather than monthly —
+a 1-day facility that only settles at the next 30-day close was not actually a 1-day facility. The cash
+helps immediately against a real withdrawal demand; the draw itself still counts toward the reserve
+requirement, so it buys time rather than fixing the reported ratio outright.
+
+**CoCo bonds** — contingent convertible notes. Debt while the bank is healthy, at a coupon premium over
+plain subordinated debt that scales with the trigger chosen at issuance (a slider from 7.5% to 14% total
+capital). The instant the ratio crosses that trigger, the notes convert to equity automatically, inside
+the same regulator check that would otherwise record a breach — no click required in the crisis moment,
+which is the entire point. Verified directly: a $4.7M tranche converted the moment capital crossed its
+trigger, capital ratio jumping from 9.4% to 202% in the same step, ownership diluted to 2.3% (the existing
+equity base was nearly gone, so the new equity holders correctly end up owning nearly everything). Matured
+without ever triggering, a CoCo repays exactly like ordinary subordinated debt.
+
+**Regulatory forbearance.** Offered once, automatically, at the first capital breach — a modal pause, not
+a background toggle — instead of the standard warning. Accepting buys 180 days with no lending
+restriction to actually fix the ratio; the game checks for recovery every month during that window, not
+only at the deadline, so a bank that genuinely recovers clears forbearance early and never sees a
+restriction at all. Missing the deadline is worse than never asking: immediate seizure, no further
+warning, skipping the consent-order step entirely. Declining falls through to the original three-strike
+process unchanged. Either way, the offer never comes back for that charter.
+
+**Emergency government injection**, last resort. Only offered once the bank is already under a consent
+order and still below the capital minimum — one strike from seizure. The stake is priced as if the bank's
+equity were worth half its book value (real dilution, deliberately harsher than an ordinary raise),
+dividends and new lending freeze for two years, and `stats.everBailedOut` is permanent for the life of the
+charter — it costs a fixed, lasting drag on the reputation target even after a full recovery, verified
+directly against an identical twin bank that was never bailed out (a 8.2-point gap, matching the
+configured penalty). This is a survived-but-marked outcome, not a clean save.
+
+### Verifying the levers actually matter, and only when they should
+
+A controlled fork test — one bank, one random seed, snapshotted at an identical starting point and then
+split two ways — found: a bank that takes a real, serious credit-loss write-off (enough to breach the
+capital minimum, not enough to go insolvent) and does nothing about it reliably loses its charter within
+a few months. The identical bank, actively defended with the same levers, survives past the same point in
+about two of three trials on a first pass; the other two bought substantially more time (60-180 extra
+days) via forbearance before still succumbing, which is the honest, realistic result — the levers provide
+real optionality, not a guaranteed save. One finding worth flagging: an *overly* aggressive defense (repeatedly
+dumping loan portfolios at a fire-sale discount) can make things worse, not better, by realising losses
+faster than it frees useful capital — using these levers well takes judgment, the same as it would for a
+real bank in distress.
+
+At the other extreme, insolvency (equity at or below zero) is never rescuable by any of these levers, by
+design — that is the one line the tools deliberately do not cross, matching how real bank resolution
+regimes work.
+
 ## Reading profitability without waiting for month-end
 
 The month-to-date figures on Overview are real bookkeeping, not an estimate — but interest, provisioning,

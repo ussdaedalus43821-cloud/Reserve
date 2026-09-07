@@ -39,7 +39,8 @@ Equity       paid-in capital + retained earnings
 | Ratio | Definition | Regulatory floor |
 |---|---|---|
 | Reserve ratio | cash ÷ deposits | 10% |
-| Capital ratio | equity ÷ risk-weighted assets | 8% |
+| Total capital ratio | (Tier 1 + admissible Tier 2) ÷ risk-weighted assets | 8% |
+| Tier 1 ratio | equity ÷ risk-weighted assets | 6% |
 
 Risk weights: cash 0%, securities 20%, secured lending (auto, mortgage) 50%, unsecured (personal,
 card) 100%. Undrawn credit-card lines convert into risk-weighted assets at 50%, so handing out
@@ -85,6 +86,36 @@ above market and approved applicants decline your offer; price below market and 
 thin the spread. Pay under market on deposits and accounts attrit to competitors. CD money is
 locked until maturity — the most expensive funding, and the only funding that cannot run.
 
+## Capital, and the levers you have over it
+
+Capital is the constraint that bites a bank that is doing well. Equity grows only through retained
+earnings, so a fast-growing book outruns it — every new loan adds risk-weighted assets faster than it
+adds profit. The **Treasury** tab holds the five things a real bank does about that.
+
+**Raise equity.** Outside investors will fund you, sized by reputation and your trailing twelve months
+of earnings, for a placement fee. The size collapses to about a third and the fee doubles once you are
+in breach or under a consent order — capital is cheapest when you do not need it. One raise per year.
+
+**Issue subordinated notes.** A liability that counts as **Tier 2 capital**, admissible up to the size
+of Tier 1. It lifts the total capital ratio without an equity raise, but you pay the coupon every month,
+you repay the principal in ten years, and it does nothing for the Tier 1 ratio or for insolvency. The
+coupon is priced off the policy rate and widens with distress, weak reputation, and non-performing
+loans. Fail to repay a maturing tranche and noteholders put you into receivership — though depositors
+are senior, so a liquidity failure usually gets there first.
+
+**Pay a dividend.** The point of owning a bank, and the reason your capital ratio stops improving. Capped
+by capital, by cash, and by trailing earnings, and blocked outright while you sit below your own limits.
+Lifetime distributions show on the game-over screen.
+
+**Cut credit lines.** Undrawn card limits convert into risk-weighted assets at 50% and earn nothing
+until someone spends. Reducing unused lines to 125% of the current balance is the fastest capital relief
+available — and cardholders resent it, so it costs reputation and some of them close the account.
+
+**Sell a loan portfolio.** A buyer takes a random cross-section of one product's book for cash, at a
+discount that widens with the credit risk of the paper and with a recession. You free the risk-weighted
+assets immediately and hand over every dollar of future interest. Selling cards transfers their undrawn
+commitments too.
+
 ## The loop
 
 1. Applicants arrive daily — deposit accounts most often, then cards, personal loans, auto loans,
@@ -107,8 +138,10 @@ locked until maturity — the most expensive funding, and the only funding that 
   it slows the outflow immediately and costs real interest expense on every deposit. Securities are
   liquidated automatically at a haircut before the bank fails. If cash still cannot cover the
   demand, that is a liquidity failure.
-* **Regulator** — below 8% capital: month one a warning, month two a consent order barring new
-  credit, month three seizure. Equity at or below zero is an immediate seizure with no cure period.
+* **Regulator** — below 8% total capital *or* 6% Tier 1: month one a warning, month two a consent order
+  barring new credit, month three seizure. Equity at or below zero is an immediate seizure with no cure
+  period — subordinated debt is capital only while there is equity beneath it.
+* **Subordinated debt default** — a maturing tranche you cannot repay ends the bank.
 
 Either way you get a summary screen — days survived, peak assets, peak equity, customers served,
 lifetime interest income, lifetime charge-offs, cause of failure — and a new charter.
@@ -148,7 +181,11 @@ first. Saves can be exported and imported as JSON from **Settings**.
   collected over the following years.
 * Income tax is a flat 21% of positive pre-tax income with no loss carry-forward.
 * One representative applicant per file; no household or joint underwriting.
+* An equity raise has no share count behind it, so dilution is not modelled; the cost is the placement
+  fee and the terms you get when you are desperate.
 
 ### Out of scope for v1
 
 Competitor banks, commercial lending, securities trading beyond a passive sweep, and multiplayer.
+Wholesale and brokered funding (fast money that flees in a crisis) and interest-rate hedging are the
+two obvious next levers.

@@ -303,6 +303,30 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
 .runbanner .btn{background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.4);color:#fff}
 .restrict{background:var(--warn);color:#1b1408;padding:6px 14px;font-size:12.5px;font-weight:500}
 .ledgerbar{background:var(--bad);color:#fff;padding:4px 14px;font-size:11px;font-family:var(--mono)}
+.devbar{background:#0a0e14;color:#7ee08c;padding:4px 14px;font-size:11px;font-family:var(--mono);
+  letter-spacing:.02em;border-bottom:1px solid #1c2530}
+/* Developer Mode reads as a debug console, deliberately unlike the rest of
+   the UI — fixed dark palette regardless of theme, monospace, a hazard-
+   striped top edge, so it's never mistaken for a normal settings card. */
+.devconsole{background:#0a0e14;color:#c9d6e3;border:1px solid #2a333f;border-radius:var(--r);
+  overflow:hidden;font-family:var(--mono)}
+.devconsole .devhead{background:repeating-linear-gradient(135deg,#1a1000,#1a1000 10px,#241600 10px,#241600 20px);
+  color:#e2a93c;padding:8px 14px;font-size:11px;font-weight:700;letter-spacing:.08em;
+  display:flex;align-items:center;justify-content:space-between}
+.devconsole .devbody{padding:14px}
+.devsec{margin-bottom:16px}
+.devsec:last-child{margin-bottom:0}
+.devsec h4{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#7d8b9b;
+  border-bottom:1px solid #2a333f;padding-bottom:5px}
+.devrow{display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px}
+.devrow:last-child{margin-bottom:0}
+.devsec .hint{color:#7d8b9b;font-family:var(--sans);font-size:11.5px}
+.devsec label.field span{color:#a5b2c1;font-family:var(--sans)}
+.devsec input,.devsec select{background:#151b23;border:1px solid #2a333f;color:#c9d6e3;font-family:var(--mono)}
+.devchip{display:inline-block;padding:1px 7px;border-radius:5px;font-size:10.5px;font-weight:700;
+  background:#241600;color:#e2a93c;border:1px solid #4a3410;letter-spacing:.04em;vertical-align:middle}
+pre.devdump{background:#151b23;border:1px solid #2a333f;border-radius:6px;padding:10px;
+  font-size:10.5px;line-height:1.5;max-height:320px;overflow:auto;white-space:pre-wrap;word-break:break-word}
 .log{max-height:230px;overflow:auto;font-size:12px}
 .logline{padding:4px 12px;border-bottom:1px solid var(--line);display:flex;gap:9px}
 .logline .lt{font-family:var(--mono);color:var(--text-3);flex:0 0 auto;font-size:11px}
@@ -349,6 +373,7 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
         <span class="mark">RESERVE</span>
         <span class="bank-name" id="hdrBankName">—</span>
         <span class="tier-badge" id="hdrTier">de novo</span>
+        <span class="devchip hidden" id="hdrCheated" title="Developer tools have been used on this save">CHEATED</span>
       </div>
       <div class="clock">
         <span class="datestamp" id="hdrDate">—</span>
@@ -372,6 +397,7 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
       <div class="kpi"><div class="k">Net income (MTD)</div><div class="v" id="kpiNI">—</div><div class="s" id="kpiNISub">&nbsp;</div></div>
     </div>
     <div id="ledgerBar" class="ledgerbar hidden"></div>
+    <div id="devBar" class="devbar hidden"></div>
     <div id="restrictBar" class="restrict hidden"></div>
     <div id="runBanner" class="runbanner hidden"></div>
   </header>
@@ -654,14 +680,19 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
           <div class="body" id="setSandbox"></div>
         </div>
         <div class="card">
+          <h3>Developer Mode</h3>
+          <div class="body" id="setDevToggle"></div>
+        </div>
+        <div class="card">
           <h3>Reference: model assumptions</h3>
           <div class="body" id="setRef"></div>
         </div>
         <div class="card">
-          <h3>Developer</h3>
+          <h3>Developer diagnostics</h3>
           <div class="body" id="setDev"></div>
         </div>
       </div>
+      <div class="grid" id="devConsoleWrap" style="margin-top:12px"></div>
     </section>
 
   </main>
@@ -710,6 +741,9 @@ const CFG = {
   FOUNDER_CAPACITY_MAX_MULT: 0.6,     // cap on stored capacity, × founding capital
   FOUNDER_CAPACITY_REGEN_MULT: 0.015, // monthly regen, × the cap
   FOUNDER_MIN: 10000,
+  // developer mode
+  DEV_MAX_JUMP_DAYS: 1800,   // 5 years — a single time-jump caps here so the tab can't hang
+  DEV_MAX_SPAWN: 500,        // customers per spawn click — the real underwriting pipeline is not free
   FOUNDER_REP_BOOST: 1,
   FOUNDER_REP_BOOST_DISTRESS: 4,      // stepping in personally, in trouble, reads as real confidence
   SUB_TERM: 10,              // subordinated debt term, years
@@ -1082,7 +1116,8 @@ let LEDGER_ERRORS = [];
 
 const IS_LINES = ["intLoans","intSec","intDep","intSub","intWhole","intInterbank","provision","feeOrig","feeLate","feeAnnual",
                   "feeInterchange","feeDebit","feeMerchant","feeService","gainSale","feeWealth","grantIncome","opex","marketing",
-                  "branchOpex","branchOpen","deptUW","deptService","deptQA","opLoss","fraudLoss","compliance","secImpair","tax"];
+                  "branchOpex","branchOpen","deptUW","deptService","deptQA","opLoss","fraudLoss","compliance","secImpair","tax",
+                  "devAdjust"];
 function blankIS(){ const o={}; for(const k of IS_LINES) o[k]=0; return o; }
 function blankCapital(){
   return { tranches: [], wholesale: [], cocos: [], interbank: [], lastRaise: -9999, raises: 0, raised: 0, raiseFees: 0,
@@ -1096,7 +1131,8 @@ function netIncomeOf(is){
        + is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeDebit + is.feeMerchant + is.feeService + is.gainSale
        + is.feeWealth + is.grantIncome
        - is.opex - is.marketing - is.branchOpex - is.branchOpen - is.deptUW - is.deptService - is.deptQA - is.opLoss
-       - is.fraudLoss - is.compliance - is.secImpair - is.tax;
+       - is.fraudLoss - is.compliance - is.secImpair - is.tax
+       + is.devAdjust;   // signed — Developer Mode's balanced money-conjuring line, positive or negative
 }
 function preTaxOf(is){ return netIncomeOf(is) + is.tax; }
 
@@ -1172,6 +1208,11 @@ function newGame(bankName, charterKey){
     // sandbox tools: off-mechanic conveniences the player reaches for
     // directly, not events the simulation itself generates
     sandbox: { freeOpex: false },
+    // developer mode: a debug console, gated off by default. devMode can be
+    // switched back off freely; everCheated cannot be unset once true — it's
+    // the permanent, save-level "this run used debug tools" flag.
+    devMode: false, everCheated: false,
+    dev: { econLock: null, autoApproveUntil: 0, infiniteMoney: false },
 
     is: { mtd: blankIS(), last: blankIS(), ytd: blankIS(), life: blankIS() },
     history: [],
@@ -1561,8 +1602,13 @@ function rollCrossSellProfile(){
   if(!ids.length || rnd() > CFG.CROSS_SELL_CHANCE) return null;
   return S.custIndex[ids[Math.floor(rnd()*ids.length)]];
 }
-function makeApplicant(){
-  const score = clamp(Math.round(680 + 90*randn()), 300, 850);
+// tierOverride is dev-tool only (synthetic customer spawning) — real
+// applicant generation never passes it, so ordinary play is untouched
+const TIER_MID = { A:825, B:770, C:705, D:625, E:450 };
+function makeApplicant(tierOverride){
+  const score = tierOverride
+    ? clamp(TIER_MID[tierOverride] + rint(-20,20), 300, 850)
+    : clamp(Math.round(680 + 90*randn()), 300, 850);
   const z = (score - 680)/90;
   const sizeMult = charterCfg().sizeMult || 1;
   const income = Math.round(Math.exp(8.35 + 0.45*randn() + 0.22*z) * sizeMult);
@@ -1574,7 +1620,10 @@ function makeApplicant(){
   const homeEquity = Math.round(income*(3+9*rnd()));
   const bizRevenue = Math.round(Math.exp(11.5 + 0.55*randn() + 0.15*z) * sizeMult);
   const bizDSCR = clamp(0.5 + 1.3*rnd() + (score-680)/900, 0.25, 2.6);
-  const cross = rollCrossSellProfile();
+  // a forced tier means the caller wants a controlled, fresh profile — skip
+  // the cross-sell roll rather than let it hand back an existing customer's
+  // real (unoverridden) score
+  const cross = tierOverride ? null : rollCrossSellProfile();
   if(cross){
     return { name: cross.name, age, income: cross.income, score: cross.score, tier: tierOf(cross.score),
              debtPmt: Math.round(debtRatio*cross.income), existingDTI: debtRatio,
@@ -1605,9 +1654,11 @@ function requestedAmount(c, product){
   return 0;
 }
 
-function makeApplication(){
-  const c = makeApplicant();
-  const product = weighted(productMix());
+// productOverride/tierOverride are dev-tool only (synthetic customer
+// spawning) — normal application generation never passes them
+function makeApplication(productOverride, tierOverride){
+  const c = makeApplicant(tierOverride);
+  const product = productOverride || weighted(productMix());
   const app = { id: S.nextId++, day: S.day, expires: S.day + CFG.APP_TTL, product,
                 name:c.name, age:c.age, income:c.income, score:c.score, tier:c.tier,
                 debtPmt:c.debtPmt, existingDTI:c.existingDTI, historyMonths:c.historyMonths,
@@ -1678,6 +1729,12 @@ function capacityCheck(product, amount, floors, guaranteedPct){
   // secured-card principal is funded by the customer's own cash collateral, not the bank's — no draw on cash
   const draw  = product === "securedcard" ? 0 : isRevolving ? amount*CFG.CARD_CASH_DRAW : amount;
   const rwAdd = isRevolving ? amount*CFG.CCF_CARD*CFG.RW[product] : amount*rwOf(product, guaranteedPct);
+  // Note: this function is also called just to preview a counter-offer
+  // before anything is booked, so infinite money must not have a side
+  // effect here — conjuring cash belongs at the actual booking site
+  // (bookCredit(), via ensureCash()), never inside a capacity check that
+  // might only ever be a look, not a commitment.
+  if(S.dev && S.dev.infiniteMoney) return { ok:true, rr:Infinity, car:Infinity, t1r:Infinity };
   const newCash = m.cash - draw;
   if(newCash < 0) return { ok:false, why:"not enough cash on hand" };
   const rr = m.funding > 0 ? newCash/m.funding : Infinity;
@@ -1878,6 +1935,7 @@ function bookCredit(app, offer){
     a.limit = offer.amount; a.balance = offer.amount; a.term = 0;
     a.revolver = true;
     a.helocMargin = offer.apr - S.macro.rate;
+    ensureCash(offer.amount);   // no-op under normal play — capacityCheck() already guaranteed this; matters only when infinite money bypassed that check
     post({ cash: -offer.amount, grossLoans: offer.amount }, "originate");
     const fee = Math.round(offer.amount * S.fees.origPct/100);
     if(fee > 0){ income("feeOrig", fee, { cash: fee, retained: fee }, "origination-fee"); a.lifeFees += fee; }
@@ -1886,6 +1944,7 @@ function bookCredit(app, offer){
     a.term = offer.term; a.remaining = offer.term;
     a.payment = pmtOf(offer.amount, offer.apr, offer.term);
     if(product === "sbloan") a.guaranteedPct = clamp(S.policy.sbloan.guaranteedPct||0, 0, CFG.SB_GUARANTEE_MAX);
+    ensureCash(offer.amount);   // no-op under normal play — capacityCheck() already guaranteed this; matters only when infinite money bypassed that check
     post({ cash: -offer.amount, grossLoans: offer.amount }, "originate");
     if(product === "bnpl" || product === "bnplplus"){
       // revenue is the merchant discount fee, not interest — paid by the
@@ -1957,7 +2016,11 @@ function decide(app, action, offer){
 function ensureCash(amount){
   if(S.gl.cash >= amount) return true;
   if(S.gl.securities > 0) raiseSecuritiesCash(amount - S.gl.cash, CFG.SECURITIES_HAIRCUT);
-  return S.gl.cash >= amount - 0.01;
+  if(S.gl.cash >= amount - 0.01) return true;
+  // infinite money: manufacture the shortfall rather than lie about it being
+  // there — keeps cash from ever going negative even with enforcement off
+  if(S.dev && S.dev.infiniteMoney){ devAdjust(amount - S.gl.cash + 1000, "dev-infinite-money"); return true; }
+  return false;
 }
 function withdraw(amount, tag){
   if(!ensureCash(amount)) return false;
@@ -2973,6 +3036,256 @@ function payDividend(amount){
   return true;
 }
 
+/* ============================ developer mode ============================
+   A debug console, not a normal game option — gated behind S.devMode. Every
+   effect below still flows through post()/income()/acc() or a real gameplay
+   function (chargeOff, closeAccount, decide, startRun, stepDay...), never a
+   raw property write that could desync the ledger the way the branch-open
+   bug once did. devAdjust() is the one new primitive: a signed, always-
+   balanced capital move with its own visible income-statement line, used
+   wherever a cheat needs to conjure or destroy money without pretending it
+   came from a real banking transaction.
+   ===================================================================== */
+function devAdjust(amount, tag){
+  amount = Math.round(amount);
+  if(amount < 0 && -amount > S.gl.cash && S.gl.securities > 0){
+    // same fallback ensureCash() uses — try securities before giving up,
+    // so a well-capitalized bank that parked most of its money there isn't
+    // artificially untouchable just because pure cash on hand is thin
+    raiseSecuritiesCash(-amount - S.gl.cash, CFG.SECURITIES_HAIRCUT);
+  }
+  // pulling money out can never take more cash than the bank actually has —
+  // same rule any real withdrawal follows, so this can't drive cash negative
+  if(amount < 0) amount = Math.max(amount, -Math.floor(S.gl.cash));
+  if(amount === 0) return;
+  income("devAdjust", amount, { cash:amount, retained:amount }, tag || "dev-adjust");
+}
+// Solve for the Tier 1 equity that would put the capital ratio at target,
+// accounting for Tier 2 (subordinated debt) being admissible only up to the
+// size of Tier 1 — a few fixed-point passes converge since subDebt is fixed.
+function devEquityForCar(targetCar){
+  const m = M();
+  if(!(m.rwa > 0)) return null;
+  let equity = m.equity;
+  for(let i=0;i<6;i++){
+    const tier2 = equity > 0 ? Math.min(S.gl.subDebt, equity) : 0;
+    equity = targetCar*m.rwa - tier2;
+  }
+  return equity;
+}
+function devSetCapitalRatio(targetCar){
+  const m = M();
+  const equity = devEquityForCar(targetCar);
+  if(equity == null) return false;
+  devAdjust(equity - m.equity, "dev-set-car");
+  const achieved = M().car;
+  // pulling equity out is capped at available cash (devAdjust never drives
+  // cash negative), so a very aggressive downward target may land short —
+  // say so rather than claim a number that wasn't actually reached
+  if(Math.abs(achieved - targetCar) > 0.005)
+    logEvent(`Developer Mode: capital ratio moved toward ${pct(targetCar)} but landed at ${pct(achieved)} — cash on hand capped how much could be pulled out.`, "warn");
+  else
+    logEvent(`Developer Mode: capital ratio set to ${pct(targetCar)}.`, "info");
+  return true;
+}
+function devZeroDeficit(){
+  if(S.gl.retained >= 0) return false;
+  devAdjust(-S.gl.retained, "dev-zero-deficit");
+  logEvent("Developer Mode: retained-earnings deficit zeroed out.", "info");
+  return true;
+}
+// shared by the Sandbox tools "cure all delinquent loans" button and
+// Developer Mode's "forgive bad debt" — one implementation, not two. No
+// ledger impact: missed/status are account-level fields, not GL balances.
+function cureAllDelinquent(){
+  let n = 0;
+  for(const a of S.loans) if(!isDead(a) && a.missed > 0){ a.missed = 0; a.status = "current"; a.lastPay = S.day; n++; }
+  return n;
+}
+// Pushes the capital ratio just under the regulatory minimum and stops —
+// the real regulatorReview() escalation (strikes, forbearance offer,
+// restriction) takes it from there at the next month close, exactly as it
+// would for a real breach. This is deliberately NOT a separate crisis state
+// machine — it's the real one, reached the fast way.
+function devForceCapitalBreach(){
+  const target = Math.max(0, CFG.REQ_CAPITAL - 0.02);
+  const m = M();
+  const equity = devEquityForCar(target);
+  if(equity == null) return false;
+  devAdjust(equity - m.equity, "dev-force-breach");
+  const achieved = M().car;
+  // pulling equity out is capped at available cash on hand — a bank sitting
+  // on little cash relative to its equity may not have enough to remove to
+  // actually cross the line, so say so rather than claim a breach that
+  // didn't happen
+  if(achieved >= CFG.REQ_CAPITAL){
+    logEvent(`Developer Mode: tried to force a capital breach but landed at ${pct(achieved)}, still above the ${pct(CFG.REQ_CAPITAL)} minimum — not enough cash on hand to pull out more equity.`, "warn");
+    return false;
+  }
+  logEvent(`Developer Mode: capital ratio pushed to ${pct(achieved)} — below the ${pct(CFG.REQ_CAPITAL)} minimum. The regulator will act at the next month close.`, "warn");
+  return true;
+}
+// Drives the exact same makeApplication() -> underwrite() -> decide()
+// pipeline the earlier data-seeding stress test used, just from a button
+// instead of a script — same real pipeline, not a second implementation.
+function devSpawnCustomers(n, tier, product){
+  n = clamp(Math.round(n) || 0, 1, CFG.DEV_MAX_SPAWN);
+  let booked = 0, declined = 0, reviewed = 0;
+  for(let i=0;i<n;i++){
+    S.stats.appsReceived++;
+    const app = makeApplication(product || null, tier || null);
+    const dec = underwrite(app);
+    if(dec.path === "approve"){ decide(app, "approve"); booked++; }
+    else if(dec.path === "decline"){ decide(app, "deny", { reason: dec.reason }); declined++; }
+    else { decide(app, "approve"); reviewed++; }   // force review-band through too, for volume
+  }
+  logEvent(`Developer Mode: spawned ${n} synthetic applicant${n===1?"":"s"} — ${booked+reviewed} booked, ${declined} declined.`, "info");
+  bumpAll(); saveGame();
+  return { n, booked, declined, reviewed };
+}
+function devClearAppQueue(){
+  const n = S.apps.length;
+  for(const app of S.apps.slice()) decide(app, "deny", { reason: "cleared by developer tool" });
+  S.apps = []; counterOpen = null; DIRTY.apps = true;
+  logEvent(`Developer Mode: cleared ${n} queued application${n===1?"":"s"}.`, "info");
+  bumpAll(); saveGame();
+  return n;
+}
+function devSpawnVIP(name, product){
+  product = product || "deposit";
+  const app = makeApplication(product, "A");
+  app.name = (name||"").trim() || "VIP Customer";
+  if(product === "deposit"){
+    app.requested = app.amount = Math.max(app.amount, Math.round(1000000 + rnd()*4000000));
+  } else {
+    app.income = app.income * 15;
+    app.requested = requestedAmount({ score:app.score, income:app.income, homeEquity:app.income*6, bizRevenue:app.income*8 }, product);
+    app.amount = Math.min(app.requested, S.policy.maxAmount[product]);
+    app.payment = monthlyObligation(product, app.amount, app.apr, app.term);
+    app.dti = ((app.debtPmt||0) + app.payment)/app.income;
+  }
+  S.stats.appsReceived++;
+  const dec = underwrite(app);
+  const label = product === "deposit" ? (app.kind||"deposit") : (PRODUCT_LABEL[product]||product);
+  if(dec.path !== "decline"){
+    decide(app, "approve");
+    logEvent(`Developer Mode: VIP "${esc(app.name)}" booked — ${label} for ${fmtMoney(app.amount||0)}.`, "ok");
+  } else {
+    decide(app, "deny", { reason: dec.reason });
+    logEvent(`Developer Mode: VIP "${esc(app.name)}" declined — ${dec.reason}`, "warn");
+  }
+  bumpAll(); saveGame();
+  return dec.path !== "decline";
+}
+function devRenameBank(name){
+  name = (name||"").trim();
+  if(!name) return false;
+  S.bankName = name.slice(0, 60);
+  bumpAll(); saveGame();
+  return true;
+}
+function devChangeCharter(key){
+  if(!CHARTERS[key] || key === S.charter) return false;
+  const from = S.charter;
+  S.charter = key;
+  logEvent(`Developer Mode: charter switched from ${CHARTERS[from].name} to ${CHARTERS[key].name}. Existing accounts and balances are unchanged — only what's booked going forward follows the new charter's rules.`, "info");
+  bumpAll(); saveGame();
+  return true;
+}
+// Runs full monthly processing for every skipped day, via the same stepDay()
+// real play uses — chunked so a multi-year jump doesn't freeze the tab.
+function devJumpTime(days, onDone){
+  days = clamp(Math.round(days) || 0, 1, CFG.DEV_MAX_JUMP_DAYS);
+  let remaining = days, ran = 0;
+  (function chunk(){
+    const batch = Math.min(30, remaining);
+    for(let i=0;i<batch && !S.over;i++){ stepDay(); ran++; }
+    remaining -= batch;
+    if(remaining > 0 && !S.over){ setTimeout(chunk, 0); }
+    else {
+      bumpAll(); saveGame();
+      logEvent(`Developer Mode: jumped ${ran} day${ran===1?"":"s"} forward.`, "info");
+      if(onDone) onDone(ran);
+    }
+  })();
+}
+const QSAVE_SLOTS = 3;
+function qsaveKey(slot){ return "reserve.bank.qsave."+slot; }
+function devQuicksave(slot){
+  try{
+    localStorage.setItem(qsaveKey(slot), JSON.stringify({ savedAt: Date.now(), state: packState(false) }));
+    return true;
+  }catch(e){ return false; }
+}
+function devQuickload(slot){
+  try{
+    const raw = localStorage.getItem(qsaveKey(slot));
+    if(!raw) return false;
+    return adoptState(JSON.parse(raw).state);
+  }catch(e){ return false; }
+}
+function devQuickslotInfo(slot){
+  try{
+    const raw = localStorage.getItem(qsaveKey(slot));
+    if(!raw) return null;
+    const w = JSON.parse(raw);
+    const g = w.state.gl;
+    return { savedAt: w.savedAt, day: w.state.day, bankName: w.state.bankName,
+             assets: (g.cash||0) + (g.grossLoans||0) - (g.allowance||0) + (g.securities||0) };
+  }catch(e){ return null; }
+}
+// A heavier, on-demand pass beyond the always-visible header readout —
+// the closest a static single-file game gets to the external chaos/
+// invariant test harness, run against the CURRENT live save rather than a
+// simulated multi-year regression (that still lives in the standalone
+// headless harness, which a browser tab can't run on itself).
+function devRunDiagnostics(){
+  const issues = [];
+  const m = M();
+  if(!isFinite(m.identityDrift)) issues.push(`Balance-sheet identity is not finite: ${m.identityDrift}`);
+  else if(Math.abs(m.identityDrift) > 0.05) issues.push(`Balance-sheet identity broke: drift ${m.identityDrift.toFixed(4)}`);
+  const ratios = { rr:m.rr, car:m.car, t1r:m.t1r, ldr:m.ldr, nplRate:m.nplRate, delinqRate:m.delinqRate, coverage:m.coverage };
+  for(const k in ratios) if(Number.isNaN(ratios[k])) issues.push(`NaN in metric '${k}'`);
+  if(m.cash < -0.01) issues.push(`Negative cash: ${m.cash.toFixed(2)}`);
+  if(m.grossLoans < -0.01) issues.push(`Negative gross loans: ${m.grossLoans.toFixed(2)}`);
+  if(m.deposits < -0.01) issues.push(`Negative deposits: ${m.deposits.toFixed(2)}`);
+  if(m.allowance < -0.01) issues.push(`Negative allowance: ${m.allowance.toFixed(2)}`);
+  let sl=0, sd=0, ss=0, negLoans=0;
+  for(const a of S.loans){
+    if(!liveLoan(a)) continue;
+    sl += a.balance;
+    if(a.balance < -0.01 && negLoans < 5){ issues.push(`Loan #${a.id} (${a.product}) has a negative balance: ${a.balance.toFixed(2)}`); negLoans++; }
+  }
+  for(const d of S.depAccts) if(d.status==="open") sd += d.balance;
+  for(const l of S.securities) if(!isDeadSec(l)) ss += l.bookValue;
+  if(Math.abs(sl - S.gl.grossLoans) > 0.5) issues.push(`Loan detail (${sl.toFixed(2)}) vs gl.grossLoans (${S.gl.grossLoans.toFixed(2)}) drifted`);
+  if(Math.abs(sd - S.gl.deposits) > 0.5) issues.push(`Deposit detail (${sd.toFixed(2)}) vs gl.deposits (${S.gl.deposits.toFixed(2)}) drifted`);
+  if(Math.abs(ss - S.gl.securities) > 0.5) issues.push(`Securities detail (${ss.toFixed(2)}) vs gl.securities (${S.gl.securities.toFixed(2)}) drifted`);
+  const retainedDrift = S.gl.retained - (netIncomeOf(S.is.life) - S.capital.dividends);
+  if(Math.abs(retainedDrift) > 1) issues.push(`Retained earnings vs lifetime net income drifted: ${retainedDrift.toFixed(2)}`);
+  if(LEDGER_ERRORS.length) issues.push(`${LEDGER_ERRORS.length} unbalanced ledger entr${LEDGER_ERRORS.length===1?"y":"ies"} recorded`);
+  return issues;
+}
+// A readable, size-capped dump — the full loan/deposit/securities arrays can
+// run into the thousands, so those are summarized (count + a small sample)
+// rather than dumped whole, which is what "readable" actually requires here.
+function devStateDump(){
+  const sample = (arr, n) => arr.slice(0, n);
+  return JSON.stringify({
+    bankName: S.bankName, charter: S.charter, day: S.day, speed: S.speed,
+    rep: S.rep, macro: S.macro, policy: S.policy, fees: S.fees, rates: S.rates,
+    departments: S.departments, branches: S.branches, marketing: S.marketing,
+    reg: S.reg, run: S.run, capital: S.capital, events: S.events,
+    gl: S.gl, stats: S.stats, sandbox: S.sandbox, dev: S.dev,
+    devMode: S.devMode, everCheated: S.everCheated,
+    is_mtd: S.is.mtd, is_life: S.is.life,
+    loans: { count: S.loans.length, sample: sample(S.loans, 8) },
+    depAccts: { count: S.depAccts.length, sample: sample(S.depAccts, 8) },
+    securities: { count: S.securities.length, sample: sample(S.securities, 5) },
+    apps: { count: S.apps.length, sample: sample(S.apps, 5) },
+  }, null, 2);
+}
+
 // Undrawn card lines consume capital at the 50% conversion factor while earning
 // nothing. Cutting them is free capital and expensive goodwill.
 function newLineFor(a){ return Math.max(500, Math.ceil(a.balance*1.25/100)*100); }
@@ -3106,10 +3419,15 @@ function updateMacro(){
         `Now ${rate(m.rate)}. Your rate sheet is stale until you reprice it.`, "warn");
     }
   }
-  const r = rnd(); const was = m.econ;
-  if(m.econ === "normal"){ if(r < 0.030) m.econ = "recession"; else if(r < 0.060) m.econ = "boom"; }
-  else if(m.econ === "recession"){ if(r < 0.115) m.econ = "normal"; }
-  else { if(r < 0.105) m.econ = "normal"; }
+  const was = m.econ;
+  if(S.dev && S.dev.econLock){
+    m.econ = S.dev.econLock;
+  } else {
+    const r = rnd();
+    if(m.econ === "normal"){ if(r < 0.030) m.econ = "recession"; else if(r < 0.060) m.econ = "boom"; }
+    else if(m.econ === "recession"){ if(r < 0.115) m.econ = "normal"; }
+    else { if(r < 0.105) m.econ = "normal"; }
+  }
   if(m.econ !== was){
     m.econMonths = 0;
     const label = { recession:"Recession", normal:"Normal expansion", boom:"Boom" }[m.econ];
@@ -3159,6 +3477,50 @@ function reputationTarget(){
 // Turns the macro-cycle drift into discrete, legible moments with a real,
 // traceable mechanical effect — read elsewhere by pdAnnual, lgdOf, productMix,
 // arrivalRate and limits() rather than being flavor text bolted on the side.
+// Each event's creation is its own function so a developer-tool trigger and
+// the organic random roll below share one real code path — the dev button
+// isn't a second, separate implementation of the same event.
+function triggerLayoffEvent(region){
+  region = region || pick(REGIONS);
+  S.events.layoff = { region, until: S.day + CFG.EVT_LAYOFF_MONTHS*CFG.DAYS_PER_MONTH };
+  const exposure = S.loans.filter(a => !isDead(a) && a.region === region).reduce((s,a)=>s+a.balance, 0);
+  logEvent(`Local employer layoff hits ${region} — delinquency there will run at ${CFG.EVT_LAYOFF_PD_MULT}× for months. Your exposure there: ${fmtCompact(exposure)}.`, "bad");
+}
+function triggerHousingEvent(){
+  S.events.housing = { until: S.day + CFG.EVT_HOUSING_MONTHS*CFG.DAYS_PER_MONTH };
+  logEvent(`Housing market correction: falling collateral values raise loss severity on mortgages and HELOCs, and new mortgage demand cools for a while.`, "bad");
+}
+function triggerCompetitorEvent(){
+  S.events.competitor = { until: S.day + CFG.EVT_COMPETITOR_MONTHS*CFG.DAYS_PER_MONTH };
+  logEvent(`A rival institution stumbles — customers are shopping around. Expect a temporary lift in applicants and deposit inflow, independent of your own reputation.`, "ok");
+}
+function triggerRateShockEvent(dir){
+  const move = rrange(CFG.EVT_RATESHOCK_MIN, CFG.EVT_RATESHOCK_MAX) * (dir === "down" ? -1 : dir === "up" ? 1 : (rnd()<0.5?-1:1));
+  S.macro.rate = clamp(S.macro.rate + move, 1.0, 9.0);
+  logEvent(`Federal Reserve ${move>0?"raises":"cuts"} rates ${Math.round(Math.abs(move)*100)}bps. HELOC balances reprice with it immediately.`, "info");
+}
+function triggerRegChangeEvent(dir){
+  const capD = rrange(0.002, CFG.EVT_REGCHANGE_MAX) * (dir === "ease" ? -1 : dir === "tighten" ? 1 : (rnd()<0.5?-1:1));
+  S.events.regchange = { until: S.day + CFG.EVT_REGCHANGE_MONTHS*CFG.DAYS_PER_MONTH, capitalDelta:capD, reserveDelta:0 };
+  logEvent(`Regulatory policy change: the industry-wide capital minimum has ${capD>0?"risen":"eased"} by ${Math.abs(Math.round(capD*1000)/10)}pt for a while.`, capD>0?"warn":"info");
+}
+// the fraud ring's random monthly roll (in monthClose) and a developer
+// trigger both call this — same selection and same fraudChargeOff() booking
+function triggerFraudRing(){
+  const pool = S.loans.filter(a => !isDead(a) && !a.fraud && (S.day-a.opened) > 360);
+  if(pool.length < 3) return false;
+  const n = Math.min(pool.length, rint(3, 12));
+  let ringLoss = 0;
+  for(let i=0;i<n;i++){
+    const idx = Math.floor(rnd()*pool.length);
+    const a = pool.splice(idx, 1)[0];
+    ringLoss += a.balance;
+    fraudChargeOff(a);
+  }
+  S.rep = clamp(S.rep - 10, 0, 100);
+  logEvent(`Fraud ring uncovered: ${n} previously "clean" accounts turn out to have been part of an organised ring — ${fmtMoney(ringLoss,0)} written off despite a clean payment history.`, "bad");
+  return true;
+}
 function rollMacroEvents(){
   const e = S.events;
   if(e.layoff && S.day >= e.layoff.until) e.layoff = null;
@@ -3166,30 +3528,11 @@ function rollMacroEvents(){
   if(e.competitor && S.day >= e.competitor.until) e.competitor = null;
   if(e.regchange && S.day >= e.regchange.until) e.regchange = null;
 
-  if(!e.layoff && rnd() < CFG.EVT_LAYOFF_CHANCE){
-    const region = pick(REGIONS);
-    e.layoff = { region, until: S.day + CFG.EVT_LAYOFF_MONTHS*CFG.DAYS_PER_MONTH };
-    const exposure = S.loans.filter(a => !isDead(a) && a.region === region).reduce((s,a)=>s+a.balance, 0);
-    logEvent(`Local employer layoff hits ${region} — delinquency there will run at ${CFG.EVT_LAYOFF_PD_MULT}× for months. Your exposure there: ${fmtCompact(exposure)}.`, "bad");
-  }
-  if(!e.housing && rnd() < CFG.EVT_HOUSING_CHANCE){
-    e.housing = { until: S.day + CFG.EVT_HOUSING_MONTHS*CFG.DAYS_PER_MONTH };
-    logEvent(`Housing market correction: falling collateral values raise loss severity on mortgages and HELOCs, and new mortgage demand cools for a while.`, "bad");
-  }
-  if(!e.competitor && rnd() < CFG.EVT_COMPETITOR_CHANCE){
-    e.competitor = { until: S.day + CFG.EVT_COMPETITOR_MONTHS*CFG.DAYS_PER_MONTH };
-    logEvent(`A rival institution stumbles — customers are shopping around. Expect a temporary lift in applicants and deposit inflow, independent of your own reputation.`, "ok");
-  }
-  if(rnd() < CFG.EVT_RATESHOCK_CHANCE){
-    const move = rrange(CFG.EVT_RATESHOCK_MIN, CFG.EVT_RATESHOCK_MAX) * (rnd()<0.5?-1:1);
-    S.macro.rate = clamp(S.macro.rate + move, 1.0, 9.0);
-    logEvent(`Federal Reserve ${move>0?"raises":"cuts"} rates ${Math.round(Math.abs(move)*100)}bps. HELOC balances reprice with it immediately.`, "info");
-  }
-  if(!e.regchange && rnd() < CFG.EVT_REGCHANGE_CHANCE){
-    const capD = rrange(0.002, CFG.EVT_REGCHANGE_MAX) * (rnd()<0.5?-1:1);
-    e.regchange = { until: S.day + CFG.EVT_REGCHANGE_MONTHS*CFG.DAYS_PER_MONTH, capitalDelta:capD, reserveDelta:0 };
-    logEvent(`Regulatory policy change: the industry-wide capital minimum has ${capD>0?"risen":"eased"} by ${Math.abs(Math.round(capD*1000)/10)}pt for a while.`, capD>0?"warn":"info");
-  }
+  if(!e.layoff && rnd() < CFG.EVT_LAYOFF_CHANCE) triggerLayoffEvent();
+  if(!e.housing && rnd() < CFG.EVT_HOUSING_CHANCE) triggerHousingEvent();
+  if(!e.competitor && rnd() < CFG.EVT_COMPETITOR_CHANCE) triggerCompetitorEvent();
+  if(rnd() < CFG.EVT_RATESHOCK_CHANCE) triggerRateShockEvent();
+  if(!e.regchange && rnd() < CFG.EVT_REGCHANGE_CHANCE) triggerRegChangeEvent();
 }
 function checkMilestones(){
   const ms = charterCfg().milestones;
@@ -3383,21 +3726,7 @@ function monthClose(){
   }
   // fraud ring: a rare, delayed reveal — a batch of seasoned, previously-clean
   // accounts turn out to have been fraudulent all along
-  if(rnd() < CFG.FRAUD_RING_CHANCE){
-    const pool = S.loans.filter(a => !isDead(a) && !a.fraud && (S.day-a.opened) > 360);
-    if(pool.length >= 3){
-      const n = Math.min(pool.length, rint(3, 12));
-      let ringLoss = 0;
-      for(let i=0;i<n;i++){
-        const idx = Math.floor(rnd()*pool.length);
-        const a = pool.splice(idx, 1)[0];
-        ringLoss += a.balance;
-        fraudChargeOff(a);
-      }
-      S.rep = clamp(S.rep - 10, 0, 100);
-      logEvent(`Fraud ring uncovered: ${n} previously "clean" accounts turn out to have been part of an organised ring — ${fmtMoney(ringLoss,0)} written off despite a clean payment history.`, "bad");
-    }
-  }
+  if(rnd() < CFG.FRAUD_RING_CHANCE) triggerFraudRing();
   // wealth management: advisory fees on assets under management, unlocked by charter
   if(charterCfg().wealthUnlocked && S.wealth.aum > 0){
     const fee = S.wealth.aum * CFG.WEALTH_FEE_BPS_YR/12;
@@ -3504,7 +3833,7 @@ function stepDay(){
   for(let i=0;i<n;i++){
     S.stats.appsReceived++;
     const app = makeApplication();
-    const dec = underwrite(app);
+    const dec = (S.dev && S.dev.autoApproveUntil && S.day < S.dev.autoApproveUntil) ? { path:"approve" } : underwrite(app);
     if(dec.path === "approve"){ decide(app, "approve"); }
     else if(dec.path === "decline"){ decide(app, "deny", { reason: dec.reason }); }
     else if(S.apps.length >= CFG.QUEUE_CAP){ overflow++; S.stats.appsDeclined++; }
@@ -3763,6 +4092,10 @@ function migrate(o){
     if(o.stats.sandboxUsed == null) o.stats.sandboxUsed = false;
   }
   if(!o.sandbox) o.sandbox = { freeOpex: false };
+  if(o.devMode == null) o.devMode = false;
+  if(o.everCheated == null) o.everCheated = o.stats && o.stats.sandboxUsed ? true : false;
+  if(!o.dev) o.dev = { econLock: null, autoApproveUntil: 0, infiniteMoney: false };
+  if(o.dev.infiniteMoney == null) o.dev.infiniteMoney = false;
   if(o.capital.founderCapacityMax == null){
     const foundingCapital = (CHARTERS[o.charter] || CHARTERS.community).capital;
     o.capital.founderCapacityMax = Math.round(foundingCapital * CFG.FOUNDER_CAPACITY_MAX_MULT);
@@ -3861,6 +4194,7 @@ function renderHeader(){
   const m = M();
   setText("hdrBankName", S.bankName);
   setText("hdrTier", sizeTier(m.assets));
+  $("hdrCheated").classList.toggle("hidden", !S.everCheated);
   setText("hdrDate", fmtDate(S.day));
   setText("kpiAssets", fmtCompact(m.assets));
   setText("kpiAssetsSub", `${m.activeLoans} credit · ${m.depAccts} deposit`);
@@ -3922,6 +4256,15 @@ function renderHeader(){
     lb.classList.remove("hidden");
     lb.textContent = `LEDGER DRIFT: A - L - E = ${m.identityDrift.toFixed(4)} · ${LEDGER_ERRORS.length} unbalanced entr${LEDGER_ERRORS.length===1?"y":"ies"} (see Settings › Developer)`;
   } else lb.classList.add("hidden");
+
+  const db = $("devBar");
+  if(S.devMode){
+    db.classList.remove("hidden");
+    db.textContent = `DEV · A−L−E ${m.identityDrift.toFixed(4)} · CAR ${pct(m.car)} · RR ${pct(m.rr)}` +
+      (S.dev.econLock ? ` · econ locked: ${S.dev.econLock}` : "") +
+      (S.dev.autoApproveUntil > S.day ? ` · auto-approve (${S.dev.autoApproveUntil-S.day}d left)` : "") +
+      (S.dev.infiniteMoney ? ` · INFINITE MONEY` : "");
+  } else db.classList.add("hidden");
 }
 
 /* ------------------------------ overview ------------------------------ */
@@ -4397,15 +4740,17 @@ function renderPortfolio(){
   );
 
   const cols = PF_COLS[type];
+  const devCol = S.devMode && type === "credit";
   setHTML("pfHead", "<tr>" + cols.map(([k,l,n]) =>
-    `<th class="sortable ${n?"n":""}" data-k="${k}">${l}${PF.sort===k?(PF.dir>0?" ▲":" ▼"):""}</th>`).join("") + "</tr>");
+    `<th class="sortable ${n?"n":""}" data-k="${k}">${l}${PF.sort===k?(PF.dir>0?" ▲":" ▼"):""}</th>`).join("")
+    + (devCol ? `<th>Dev</th>` : "") + "</tr>");
 
   const rows = pfRows();
   const per = 50, pages = Math.max(1, Math.ceil(rows.length/per));
   if(PF.page >= pages) PF.page = pages-1;
   const slice = rows.slice(PF.page*per, PF.page*per+per);
   setText("pfCount", `${rows.length.toLocaleString("en-US")} record${rows.length===1?"":"s"}`);
-  if(!slice.length){ setHTML("pfBody", `<tr><td colspan="${cols.length}"><div class="empty">No accounts match these filters.</div></td></tr>`); }
+  if(!slice.length){ setHTML("pfBody", `<tr><td colspan="${cols.length+(devCol?1:0)}"><div class="empty">No accounts match these filters.</div></td></tr>`); }
   else setHTML("pfBody", slice.map(r => "<tr>" + cols.map(([k,l,n]) => {
       let v;
       if(k === "status") v = statusTag(r.status);
@@ -4416,7 +4761,11 @@ function renderPortfolio(){
       else if(k === "score") v = r[k]==null ? "—" : Math.round(r[k]);
       else v = esc(r[k]==null?"—":r[k]);
       return `<td class="${n?"n":""}">${v}</td>`;
-    }).join("") + "</tr>").join(""));
+    }).join("") + (devCol && !isDead(r.ref)
+        ? `<td><button class="btn sm" data-dev-default="${r.ref.id}">Default</button>
+             <button class="btn sm" data-dev-payoff="${r.ref.id}">Payoff</button></td>`
+        : devCol ? `<td class="dim">—</td>` : "")
+      + "</tr>").join(""));
 
   setHTML("pfPager", pages>1
     ? `<button class="btn sm" data-pg="-1" ${PF.page===0?"disabled":""}>Previous</button>
@@ -5442,7 +5791,177 @@ function buildSettings(){
      <div class="hint">Marketing, department spend, and credit losses still cost what they cost — this only zeroes
        the base overhead line.</div>`);
 
+  buildDevToggle();
+  buildDevConsole();
   refreshDev();
+}
+function buildDevToggle(){
+  setHTML("setDevToggle",
+    `<div class="hint" style="margin-bottom:9px">A debug console: money, time, portfolio, and crisis controls that
+      don't pretend to be part of the simulation. Off by default — switching it on marks this save
+      <span class="devchip">CHEATED</span> for the rest of its life. Turning the toggle back off does not clear that.</div>` +
+    `<label class="switch"><input type="checkbox" id="setDevMode" ${S.devMode?"checked":""}>
+      Developer Mode</label>` +
+    (S.everCheated ? `<div class="hint" style="margin-top:8px"><span class="devchip">CHEATED</span> this save has used debug tools.</div>` : ""));
+}
+function devSectionMoney(){
+  const m = M();
+  return `<div class="devsec"><h4>Money &amp; capital</h4>
+    <div class="hint">Isolating a bug: if setting the capital ratio to a healthy number doesn't clear a downstream
+      symptom (a stuck lending restriction, say), the symptom wasn't really caused by the capital ratio.</div>
+    <div class="devrow">
+      <label class="field" style="margin:0"><span>Add cash</span>
+        <input type="number" id="devCashAmt" step="10000" min="1000" value="100000"></label>
+      <button class="btn sm" id="devBtnCash">Add</button>
+    </div>
+    <div class="devrow">
+      <label class="field" style="margin:0"><span>Set capital ratio to</span>
+        <input type="number" id="devCarTarget" step="1" min="0" max="500" value="${Math.round(clamp(m.car*100,0,500))}"> %</label>
+      <button class="btn sm" id="devBtnCar" ${m.rwa>0?"":"disabled"}>Set</button>
+      ${m.rwa<=0 ? `<span class="hint">no risk-weighted assets yet — nothing to target</span>` : ""}
+    </div>
+    <div class="devrow">
+      <button class="btn sm" id="devBtnZeroDeficit" ${S.gl.retained<0?"":"disabled"}>Zero retained-earnings deficit</button>
+      <button class="btn sm" id="devBtnForgive">Forgive all bad debt</button>
+    </div>
+  </div>`;
+}
+function devSectionTime(){
+  const slots = [];
+  for(let i=1;i<=QSAVE_SLOTS;i++){
+    const info = devQuickslotInfo(i);
+    slots.push(`<div class="devrow">
+      <span style="flex:1;font-size:11.5px;color:#a5b2c1">Slot ${i}${info ? ` — day ${info.day} · ${esc(info.bankName)} · ${fmtCompact(info.assets)} · ${new Date(info.savedAt).toLocaleTimeString()}` : ` — empty`}</span>
+      <button class="btn sm" data-qsave="${i}">Save</button>
+      <button class="btn sm" data-qload="${i}" ${info?"":"disabled"}>Load</button>
+    </div>`);
+  }
+  return `<div class="devsec"><h4>Time control</h4>
+    <div class="devrow">
+      <label class="field" style="margin:0"><span>Jump forward (days)</span>
+        <input type="number" id="devJumpDays" step="30" min="1" max="${CFG.DEV_MAX_JUMP_DAYS}" value="90"></label>
+      <button class="btn sm" id="devBtnJump" ${S.over?"disabled":""}>Jump</button>
+      <span class="hint">runs real monthly processing for every day skipped — capped at ${CFG.DEV_MAX_JUMP_DAYS} days per jump</span>
+    </div>
+    <div style="font-size:11px;color:#7d8b9b;margin:10px 0 4px">Quicksave slots — separate from autosave</div>
+    ${slots.join("")}
+    <div style="font-size:11px;color:#7d8b9b;margin:10px 0 4px">Lock the economy</div>
+    <div class="devrow">
+      ${["boom","normal","recession"].map(k=>
+        `<button class="btn sm ${S.dev.econLock===k?"primary":""}" data-econlock="${k}">${k[0].toUpperCase()+k.slice(1)}</button>`).join("")}
+      <button class="btn sm" data-econlock="">Unlocked</button>
+    </div>
+  </div>`;
+}
+function devSectionPortfolio(){
+  return `<div class="devsec"><h4>Portfolio</h4>
+    <div class="devrow">
+      <label class="field" style="margin:0"><span>Spawn customers</span>
+        <input type="number" id="devSpawnN" step="10" min="1" max="${CFG.DEV_MAX_SPAWN}" value="50"></label>
+      <label class="field" style="margin:0"><span>Tier</span>
+        <select id="devSpawnTier"><option value="">Realistic mix</option>
+          ${TIERS.map(t=>`<option value="${t}">${t} · ${TIER_NAME[t]}</option>`).join("")}</select></label>
+      <label class="field" style="margin:0"><span>Product</span>
+        <select id="devSpawnProduct"><option value="">Realistic mix</option>
+          <option value="deposit">Deposit</option>
+          ${PRODUCTS.map(p=>`<option value="${p}">${PRODUCT_LABEL[p]}</option>`).join("")}</select></label>
+      <button class="btn sm" id="devBtnSpawn">Spawn</button>
+    </div>
+    <div class="hint">Drives the same makeApplication → underwrite → decide pipeline as real applicants — the same
+      approach as the earlier data-seeding stress test, just from a button.</div>
+    <div class="devrow" style="margin-top:8px">
+      <button class="btn sm" id="devBtnClearQueue">Clear application queue (${S.apps.length})</button>
+    </div>
+    <div class="devrow">
+      <label class="field" style="margin:0"><span>Auto-approve everything for</span>
+        <input type="number" id="devAutoDays" step="10" min="1" max="720" value="30"> days</label>
+      <button class="btn sm" id="devBtnAutoApprove">Start</button>
+      ${S.dev.autoApproveUntil > S.day ? `<button class="btn sm" id="devBtnAutoApproveStop">Stop now (${S.dev.autoApproveUntil-S.day}d left)</button>` : ""}
+    </div>
+    <div class="hint">Force-default or force-payoff a specific account from the Portfolio tab — a "Dev" column
+      appears there on Active credit accounts while Developer Mode is on.</div>
+  </div>`;
+}
+function devSectionCrisis(){
+  return `<div class="devsec"><h4>Crisis triggers</h4>
+    <div class="devrow">
+      <button class="btn sm" id="devBtnRun" ${S.run.active?"disabled":""}>Fire a bank run</button>
+      <button class="btn sm" id="devBtnBreach">Force capital-ratio breach</button>
+      <button class="btn sm" id="devBtnFraudRing">Trigger fraud ring</button>
+    </div>
+    <div style="font-size:11px;color:#7d8b9b;margin:10px 0 4px">Narrative macro events, on demand</div>
+    <div class="devrow">
+      <label class="field" style="margin:0"><span>Region</span>
+        <select id="devLayoffRegion">${REGIONS.map(r=>`<option value="${r}">${r}</option>`).join("")}</select></label>
+      <button class="btn sm" id="devBtnLayoff">Regional layoff</button>
+      <button class="btn sm" id="devBtnHousing">Housing correction</button>
+      <button class="btn sm" id="devBtnCompetitor">Competitor scandal</button>
+    </div>
+    <div class="devrow">
+      <button class="btn sm" data-rateshock="up">Rate shock up</button>
+      <button class="btn sm" data-rateshock="down">Rate shock down</button>
+      <button class="btn sm" data-regchange="tighten">Reg. tightening</button>
+      <button class="btn sm" data-regchange="ease">Reg. easing</button>
+    </div>
+  </div>`;
+}
+function devSectionQA(){
+  return `<div class="devsec"><h4>QA / debug</h4>
+    <div class="devrow">
+      <button class="btn sm" id="devBtnDiag">Run full diagnostics</button>
+      <button class="btn sm" id="devBtnDump">Show state dump</button>
+    </div>
+    <div id="devDiagOut"></div>
+    <pre class="devdump hidden" id="devDumpOut"></pre>
+  </div>`;
+}
+function devSectionVanity(){
+  return `<div class="devsec"><h4>Vanity &amp; fun</h4>
+    <div class="devrow">
+      <label class="field" style="margin:0"><span>Rename bank</span>
+        <input type="text" id="devRenameInput" value="${esc(S.bankName)}" maxlength="60"></label>
+      <button class="btn sm" id="devBtnRename">Rename</button>
+    </div>
+    <div class="devrow">
+      <label class="field" style="margin:0"><span>Change charter</span>
+        <select id="devCharterSelect">${Object.keys(CHARTERS).map(k=>
+          `<option value="${k}" ${k===S.charter?"selected":""}>${CHARTERS[k].name}</option>`).join("")}</select></label>
+      <button class="btn sm" id="devBtnCharter">Change</button>
+      <span class="hint">existing accounts and balances are untouched</span>
+    </div>
+    <div class="devrow">
+      <label class="field" style="margin:0"><span>Reputation</span>
+        <input type="number" id="devRepTarget" step="1" min="0" max="100" value="${Math.round(S.rep)}"></label>
+      <button class="btn sm" id="devBtnRep">Set</button>
+    </div>
+    <div class="devrow">
+      <label class="field" style="margin:0"><span>Spawn VIP name</span>
+        <input type="text" id="devVipName" placeholder="e.g. Elon" maxlength="40"></label>
+      <label class="field" style="margin:0"><span>Product</span>
+        <select id="devVipProduct"><option value="deposit">Deposit (whale account)</option>
+          ${PRODUCTS.map(p=>`<option value="${p}">${PRODUCT_LABEL[p]}</option>`).join("")}</select></label>
+      <button class="btn sm" id="devBtnVip">Spawn</button>
+    </div>
+    <div class="devrow">
+      <label class="switch"><input type="checkbox" id="devInfiniteMoney" ${S.dev.infiniteMoney?"checked":""}>
+        Infinite money — no reserve/capital ratio enforcement at all</label>
+    </div>
+  </div>`;
+}
+function buildDevConsole(){
+  const wrap = $("devConsoleWrap");
+  if(!S.devMode){ wrap.innerHTML = ""; return; }
+  wrap.innerHTML = `<div class="devconsole">
+    <div class="devhead"><span>⚠ DEVELOPER MODE — DEBUG CONSOLE ⚠</span><span class="devchip">CHEATED</span></div>
+    <div class="devbody">
+      ${devSectionMoney()}
+      ${devSectionTime()}
+      ${devSectionPortfolio()}
+      ${devSectionCrisis()}
+      ${devSectionQA()}
+      ${devSectionVanity()}
+    </div>
+  </div>`;
 }
 function auditLedger(){
   const m = M();
@@ -5783,7 +6302,7 @@ function showGameOver(){
         <div class="gostat"><div class="k">Government support</div><div class="v">${S.stats.everBailedOut ? fmtCompact(S.capital.bailoutReceived)+" (marked)" : "never needed"}</div></div>
         <div class="gostat"><div class="k">Largest size reached</div><div class="v">${sizeTier(o.peakAssets)}</div></div>
       </div>
-      ${S.stats.sandboxUsed ? `<div class="hint" style="margin-top:10px">Sandbox tools were used during this run.</div>` : ""}
+      ${S.everCheated ? `<div class="hint" style="margin-top:10px"><span class="devchip">CHEATED</span> Sandbox or Developer Mode tools were used during this run.</div>` : ""}
       <div class="hint" style="margin-top:10px">The failed bank stays on screen behind this dialog if you want to
         read the financials before starting over.</div>
     </div>
@@ -5900,6 +6419,20 @@ function wire(){
       buildBranches();
       return;
     }
+    const devDef = e.target.closest("button[data-dev-default]");
+    if(devDef && S.devMode && !S.over){
+      const a = S.loans.find(x=>x.id===+devDef.dataset.devDefault);
+      if(a && !isDead(a) && confirm(`Force ${a.name}'s ${PRODUCT_LABEL[a.product]} account into default right now?`)) chargeOff(a);
+      DIRTY.portfolio = true; renderPortfolio();
+      return;
+    }
+    const devPay = e.target.closest("button[data-dev-payoff]");
+    if(devPay && S.devMode && !S.over){
+      const a = S.loans.find(x=>x.id===+devPay.dataset.devPayoff);
+      if(a && !isDead(a)) closeAccount(a, "paid off in full (developer tool)");
+      DIRTY.portfolio = true; renderPortfolio();
+      return;
+    }
     const repayBtn = e.target.closest("button[data-repay]");
     if(repayBtn && !S.over){
       const i = +repayBtn.dataset.repay, w = S.capital.wholesale[i];
@@ -6009,14 +6542,13 @@ function wire(){
     const sb = e.target.closest("[data-sandbox]");
     if(sb){
       const kind = sb.dataset.sandbox;
-      S.stats.sandboxUsed = true;
+      S.stats.sandboxUsed = true; S.everCheated = true;
       if(kind === "capital"){
         const amt = +sb.dataset.amt;
         post({ cash: amt, paidIn: amt }, "sandbox-capital");
         toast("Sandbox", `${fmtMoney(amt)} of capital added.`, "ok");
       } else if(kind === "cure"){
-        let n = 0;
-        for(const a of S.loans) if(!isDead(a) && a.missed > 0){ a.missed = 0; a.status = "current"; a.lastPay = S.day; n++; }
+        const n = cureAllDelinquent();
         toast("Sandbox", n ? `Cured ${n} delinquent account${n===1?"":"s"}.` : "Nothing was delinquent.", "ok");
       } else if(kind === "rep"){
         S.rep = 100;
@@ -6028,6 +6560,146 @@ function wire(){
       }
       bumpAll(); saveGame(); buildSettings();
       return;
+    }
+    if(id === "devBtnCash"){
+      devAdjust(+$("devCashAmt").value||0, "dev-add-cash");
+      toast("Developer Mode", "Cash added.", "ok"); bumpAll(); saveGame(); buildSettings(); return;
+    }
+    if(id === "devBtnCar"){
+      const ok = devSetCapitalRatio((+$("devCarTarget").value||0)/100);
+      toast("Developer Mode", ok ? "Capital ratio set." : "No risk-weighted assets to target.", ok?"ok":"warn");
+      bumpAll(); saveGame(); buildSettings(); return;
+    }
+    if(id === "devBtnZeroDeficit"){
+      const ok = devZeroDeficit();
+      toast("Developer Mode", ok ? "Deficit zeroed out." : "No deficit to clear.", "ok");
+      bumpAll(); saveGame(); buildSettings(); return;
+    }
+    if(id === "devBtnForgive"){
+      const n = cureAllDelinquent();
+      toast("Developer Mode", n ? `Forgave ${n} delinquent account${n===1?"":"s"}.` : "Nothing was delinquent.", "ok");
+      bumpAll(); saveGame(); buildSettings(); return;
+    }
+    if(id === "devBtnJump"){
+      const days = +$("devJumpDays").value || 0;
+      toast("Developer Mode", `Jumping ${Math.min(days,CFG.DEV_MAX_JUMP_DAYS)} days…`, "info");
+      devJumpTime(days, () => { buildSettings(); bumpAll(); });
+      return;
+    }
+    const qs = e.target.closest("[data-qsave]");
+    if(qs){
+      devQuicksave(+qs.dataset.qsave);
+      toast("Developer Mode", `Saved to slot ${qs.dataset.qsave}.`, "ok");
+      buildSettings(); return;
+    }
+    const ql = e.target.closest("[data-qload]");
+    if(ql){
+      if(confirm("Load this quicksave? The current, unsaved state in this slot's place will be lost.")){
+        if(devQuickload(+ql.dataset.qload)){ toast("Developer Mode", "Quickload complete.", "ok"); setTab("overview"); }
+      }
+      buildSettings(); return;
+    }
+    const el2 = e.target.closest("[data-econlock]");
+    if(el2){
+      S.dev.econLock = el2.dataset.econlock || null;
+      toast("Developer Mode", S.dev.econLock ? `Economy locked to ${S.dev.econLock}.` : "Economy unlocked.", "ok");
+      bumpAll(); saveGame(); buildSettings(); return;
+    }
+    if(id === "devBtnSpawn"){
+      const n = +$("devSpawnN").value||0, tier = $("devSpawnTier").value, product = $("devSpawnProduct").value;
+      const r = devSpawnCustomers(n, tier, product);
+      toast("Developer Mode", `Spawned ${r.n}: ${r.booked+r.reviewed} booked, ${r.declined} declined.`, "ok");
+      buildSettings(); return;
+    }
+    if(id === "devBtnClearQueue"){
+      const n = devClearAppQueue();
+      toast("Developer Mode", `Cleared ${n} application${n===1?"":"s"}.`, "ok");
+      buildSettings(); return;
+    }
+    if(id === "devBtnAutoApprove"){
+      const days = +$("devAutoDays").value || 0;
+      S.dev.autoApproveUntil = S.day + clamp(Math.round(days), 1, 720);
+      toast("Developer Mode", `Auto-approving everything for ${days} days.`, "ok");
+      bumpAll(); saveGame(); buildSettings(); return;
+    }
+    if(id === "devBtnAutoApproveStop"){
+      S.dev.autoApproveUntil = 0;
+      toast("Developer Mode", "Auto-approve stopped.", "ok");
+      bumpAll(); saveGame(); buildSettings(); return;
+    }
+    if(id === "devBtnRun"){
+      if(!S.run.active){ startRun(); toast("Developer Mode", "Bank run fired.", "ok"); }
+      buildSettings(); return;
+    }
+    if(id === "devBtnBreach"){
+      devForceCapitalBreach();
+      toast("Developer Mode", "Capital ratio pushed under the minimum.", "warn");
+      buildSettings(); return;
+    }
+    if(id === "devBtnFraudRing"){
+      const ok = triggerFraudRing();
+      toast("Developer Mode", ok ? "Fraud ring triggered." : "Not enough seasoned accounts (need 3+ open 12+ months).", ok?"ok":"warn");
+      bumpAll(); saveGame(); buildSettings(); return;
+    }
+    if(id === "devBtnLayoff"){
+      triggerLayoffEvent($("devLayoffRegion").value);
+      toast("Developer Mode", "Regional layoff triggered.", "ok");
+      bumpAll(); saveGame(); buildSettings(); return;
+    }
+    if(id === "devBtnHousing"){
+      triggerHousingEvent();
+      toast("Developer Mode", "Housing correction triggered.", "ok");
+      bumpAll(); saveGame(); buildSettings(); return;
+    }
+    if(id === "devBtnCompetitor"){
+      triggerCompetitorEvent();
+      toast("Developer Mode", "Competitor scandal triggered.", "ok");
+      bumpAll(); saveGame(); buildSettings(); return;
+    }
+    const rs = e.target.closest("[data-rateshock]");
+    if(rs){
+      triggerRateShockEvent(rs.dataset.rateshock);
+      toast("Developer Mode", "Rate shock triggered.", "ok");
+      bumpAll(); saveGame(); buildSettings(); return;
+    }
+    const rc = e.target.closest("[data-regchange]");
+    if(rc){
+      triggerRegChangeEvent(rc.dataset.regchange);
+      toast("Developer Mode", "Regulatory policy change triggered.", "ok");
+      bumpAll(); saveGame(); buildSettings(); return;
+    }
+    if(id === "devBtnDiag"){
+      const issues = devRunDiagnostics();
+      $("devDiagOut").innerHTML = `<div class="rule"></div>` +
+        (issues.length
+          ? `<div class="hint" style="color:#f2726d;font-family:var(--sans)">${issues.length} issue${issues.length===1?"":"s"} found:</div>` +
+            `<pre class="devdump">${esc(issues.join("\n"))}</pre>`
+          : `<div class="hint" style="color:#7ee08c;font-family:var(--sans)">No issues found — balance sheet identity holds, no NaN ratios, no negative balances, ledger and detail totals reconcile.</div>`);
+      return;
+    }
+    if(id === "devBtnDump"){
+      const el3 = $("devDumpOut");
+      if(el3.classList.contains("hidden")){ el3.textContent = devStateDump(); el3.classList.remove("hidden"); }
+      else el3.classList.add("hidden");
+      return;
+    }
+    if(id === "devBtnRename"){
+      if(devRenameBank($("devRenameInput").value)) toast("Developer Mode", "Bank renamed.", "ok");
+      buildSettings(); return;
+    }
+    if(id === "devBtnCharter"){
+      if(devChangeCharter($("devCharterSelect").value)) toast("Developer Mode", "Charter changed.", "ok");
+      buildSettings(); return;
+    }
+    if(id === "devBtnRep"){
+      S.rep = clamp(Math.round(+$("devRepTarget").value||0), 0, 100);
+      toast("Developer Mode", "Reputation set.", "ok");
+      bumpAll(); saveGame(); buildSettings(); return;
+    }
+    if(id === "devBtnVip"){
+      const ok = devSpawnVIP($("devVipName").value, $("devVipProduct").value);
+      toast("Developer Mode", ok ? "VIP booked." : "VIP application declined.", ok?"ok":"warn");
+      buildSettings(); return;
     }
     if(e.target.id === "btnSaveNow"){ saveGame(); toast("Saved", "Game state written to browser storage.", "ok"); buildSettings(); return; }
     if(e.target.id === "btnExport"){
@@ -6058,6 +6730,18 @@ function wire(){
     if(e.target.id === "brRegionFilter"){ BR.region = e.target.value; buildBranches(); return; }
     if(e.target.id === "brSort"){ BR.sort = e.target.value; buildBranches(); return; }
     if(e.target.id === "setPauseBlur"){ S.pauseOnBlur = e.target.checked; saveGame(); }
+    if(e.target.id === "setDevMode"){
+      S.devMode = e.target.checked;
+      if(S.devMode) S.everCheated = true;
+      bumpAll(); saveGame(); buildSettings();
+      return;
+    }
+    if(e.target.id === "devInfiniteMoney"){
+      S.dev.infiniteMoney = e.target.checked;
+      toast("Developer Mode", S.dev.infiniteMoney ? "Infinite money on — no reserve/capital enforcement." : "Infinite money off.", S.dev.infiniteMoney?"warn":"ok");
+      bumpAll(); saveGame(); buildSettings();
+      return;
+    }
     if(e.target.id === "setReprice"){
       S.macro.repriceMonths = +e.target.value;
       S.macro.monthsSinceReprice = 0;

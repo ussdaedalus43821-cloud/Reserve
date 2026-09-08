@@ -3030,8 +3030,16 @@ function payDividend(amount){
   if(!ensureCash(amount)) return false;
   post({ cash:-amount, retained:-amount }, "dividend");
   S.capital.dividends += amount;
-  logEvent(`Paid a ${fmtMoney(amount)} dividend. Lifetime distributions ${fmtMoney(S.capital.dividends)}.`, "info");
-  toast("Dividend paid", `${fmtMoney(amount)} out. Capital ratio now ${pct(M().car)}.`, "ok");
+  // it doesn't leave the story — a dividend is real personal income, and it
+  // lands in the same reinvestable pool "Personal investment" draws from.
+  // Unlike the pool's slow organic monthly regen, this raises the ceiling
+  // too, permanently — every dollar you ever take out is a dollar you could
+  // one day put back in, without diluting yourself, on top of whatever
+  // your outside wealth was already building toward.
+  S.capital.founderCapacity += amount;
+  S.capital.founderCapacityMax += amount;
+  logEvent(`Paid a ${fmtMoney(amount)} dividend. Lifetime distributions ${fmtMoney(S.capital.dividends)} — it's now sitting in your personal capacity to reinvest.`, "info");
+  toast("Dividend paid", `${fmtMoney(amount)} out, and into your personal investment capacity. Capital ratio now ${pct(M().car)}.`, "ok");
   bumpAll(); saveGame();
   return true;
 }
@@ -5257,8 +5265,9 @@ function buildTreasury(){
   };
   setHTML("trFounder",
     `<div class="hint" style="margin-bottom:9px">Your own money, wired straight in — no placement fee, and it
-      doesn't dilute you, since it's already your own share of the pie getting bigger. What limits it is that your
-      own pocket is finite: it refills slowly on its own, whatever the bank is doing.</div>` +
+      doesn't dilute you, since it's already your own share of the pie getting bigger. It refills slowly on its own,
+      whatever the bank is doing — and every dividend you ever pay yourself lands here too, permanently, so the
+      ceiling only ever grows.</div>` +
     row("Available right now", fmtMoney(fc,0)) +
     row("Personal capacity ceiling", fmtMoney(fcMax,0), "muted") +
     row("Invested to date", `${fmtMoney(S.capital.founderInvested,0)}${S.capital.founderCount?` · ${S.capital.founderCount} time${S.capital.founderCount===1?"":"s"}`:""}`) +
@@ -5337,7 +5346,9 @@ function buildTreasury(){
   const dc = dividendCapacity();
   setHTML("trDiv",
     `<div class="hint" style="margin-bottom:9px">Taking money out is the point of owning a bank — and every dollar out is a
-      dollar of capital that is no longer supporting the loan book. The regulator blocks distributions when you are thin.</div>` +
+      dollar of capital that is no longer supporting the loan book. The regulator blocks distributions when you are thin.
+      It isn't gone, though: it lands in your personal investment capacity below, ready to go back in later without
+      diluting you.</div>` +
     row("Lifetime dividends", fmtMoney(S.capital.dividends,0)) +
     row("Limited by capital", fmtMoney(dc.byCapital,0), "muted") +
     row("Limited by cash", fmtMoney(dc.byCash,0), "muted") +

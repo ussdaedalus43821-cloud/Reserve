@@ -464,7 +464,6 @@ pre.devdump{background:#151b23;border:1px solid #2a333f;border-radius:6px;paddin
             <option value="personal">Personal loan</option>
             <option value="auto">Auto loan</option>
             <option value="mortgage">Mortgage</option>
-            <option value="deposit">Deposit (KYC)</option>
           </select>
           <select id="appSort">
             <option value="age">Oldest first</option>
@@ -889,7 +888,6 @@ const CFG = {
   OP_ERROR_REP_HIT: 3,
 
   // deposits
-  KYC_THRESHOLD: 250000,     // deposits above this get a compliance review
   DEP_KIND: { checking:0.45, savings:0.40, cd:0.15 },
   CD_TERM: 12,               // months
   DEP_BETA: 0.55,            // how strongly depositors react to rate gaps
@@ -1839,8 +1837,9 @@ function underwrite(app){
   if(app.product === "deposit"){
     if(!p.depositProducts[app.kind])
       return { path:"decline", reason:`Not accepting new ${app.kind} accounts.` };
-    if(app.amount > CFG.KYC_THRESHOLD)
-      return { path:"review", reason:`Deposit of ${fmtMoney(app.amount)} exceeds the ${fmtMoney(CFG.KYC_THRESHOLD)} source-of-funds threshold — compliance review.` };
+    // no source-of-funds review, at any size — money on the books is money
+    // on the books. The bank still carries whatever fraud/compliance risk
+    // that implies; it just no longer shows up as a manual-review gate.
     return { path:"approve" };
   }
   if(app.product === "heloc") return underwriteHeloc(app);

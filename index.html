@@ -774,12 +774,22 @@ const CFG = {
   PD_PRODUCT: { mortgage:0.55, auto:0.80, personal:1.15, card:1.30,
                 heloc:0.65, studentloan:0.70, sbloan:1.20, securedcard:1.00,
                 bnpl:1.60, bnplplus:1.20 },
-  MACRO_PD: { recession:2.5, normal:1.0, boom:0.6 },
+  // "normal" sits a little below the raw 1.0x baseline on purpose — most of
+  // a run is spent here, so this is the one number that decides whether
+  // ordinary, uneventful play compounds into real growth or just treads
+  // water between the recession/boom swings. Recession severity (2.5x) and
+  // boom's advantage (0.6x) are both untouched.
+  MACRO_PD: { recession:2.5, normal:0.85, boom:0.6 },
   CURE: { secured:0.34, unsecured:0.26 },   // monthly probability a delinquent account cures
   CHARGEOFF_AT: 4,           // missed payments before charge-off (120 DPD)
 
-  // operating cost model
-  OPEX_BASE: 8000,           // fixed monthly overhead
+  // operating cost model. OPEX_BASE was the single largest expense line for
+  // a young bank in testing — bigger than deposit interest, discretionary
+  // department spend, or credit losses combined — which made "normal times"
+  // growth feel out of reach regardless of how well the bank was run. Trimmed
+  // it some; the size- and volume-scaled components below are untouched, so
+  // a bank that actually grows still earns real operating leverage from it.
+  OPEX_BASE: 6500,           // fixed monthly overhead
   OPEX_ASSET_BPS: 0.0006,    // monthly, on total assets (~72bp / yr)
   OPEX_DEP_ACCT: 2.5,        // monthly servicing cost per deposit account
   OPEX_CREDIT_ACCT: 6.0,     // monthly servicing cost per credit account
@@ -1112,7 +1122,12 @@ function newGame(bankName, charterKey){
       maxAmount: Object.assign({ card:25000, personal:40000, auto:60000, mortgage:500000,
                    heloc:75000, studentloan:80000, sbloan:250000, securedcard:5000,
                    bnpl:600, bnplplus:6000 }, ch.maxAmount||{}),
-      sweep: false, sweepBuffer: 0.18,
+      // A well-run bank doesn't let deposit-funded cash sit at 0% while still
+      // paying depositors and fixed overhead on it — sweeping it into
+      // short-duration AFS Treasuries by default earns something safely
+      // (minimal duration risk) instead of leaving new banks dragged down by
+      // idle cash they never noticed the toggle for.
+      sweep: true, sweepBuffer: 0.18,
       sweepProfile: { type:"treasury", duration:"short", classification:"afs" },
       apyEmergency: 0,
       heloc: { minScore:660, maxDTI:0.43 },
@@ -1151,6 +1166,13 @@ function newGame(bankName, charterKey){
     log: [], decisions: [],
   };
   LEDGER_ERRORS = [];
+  // M() memoizes on a module-level version counter + the cached rate, neither
+  // of which newGame() used to touch — so a fresh game's very first metrics
+  // read (before anything here has posted to the ledger) could silently
+  // return the previous game's stale, unrelated snapshot whenever _mv and
+  // S.macro.rate happened to still match (which they often do, since every
+  // charter starts at the same 4.25% rate). Force a real recompute here.
+  _mCache = null; _mCacheV = -1; _mCacheRate = null;
   seedDeposits(ch.deposits);
   logEvent("Charter granted. " + fmtMoney(ch.capital) + " of paid-in capital on deposit at the Fed.", "ok");
   bumpAll();
@@ -1389,7 +1411,7 @@ function arrivalRate(){
   const m = M(), mf = marketingFactor();
   const repF = clamp(0.25 + S.rep/67, 0.18, 2.2);
   const scale = Math.pow(Math.max(1, m.assets/3e6), 0.32);
-  const econF = S.macro.econ==="boom" ? 1.15 : S.macro.econ==="recession" ? 0.82 : 1;
+  const econF = S.macro.econ==="boom" ? 1.15 : S.macro.econ==="recession" ? 0.82 : 1.08;
   const restrictF = S.reg.restricted ? 0.7 : 1;
   const runF = S.run.active ? 0.35 : 1;
   const brandF = clamp(1 + 0.22*(mf.brand-1), 0.75, 1.35);
@@ -2170,7 +2192,7 @@ function processDepositAccount(d){
   }
   // organic balance drift
   const gap = (d.kind === "cd" ? d.apy : effectiveDepAPY(d.kind)) - marketDepAPY(d.kind);
-  const econAdj = S.macro.econ === "boom" ? 0.004 : S.macro.econ === "recession" ? -0.004 : 0;
+  const econAdj = S.macro.econ === "boom" ? 0.004 : S.macro.econ === "recession" ? -0.004 : 0.0015;
   const comp = S.events.competitor;
   const compAdj = (comp && S.day < comp.until) ? (CFG.EVT_COMPETITOR_DEP_MULT - 1)*0.03 : 0;
   let g = d.drift + econAdj + compAdj + clamp(gap*d.beta*0.012, -0.02, 0.03) + 0.006*randn();
@@ -5251,7 +5273,7 @@ function buildSettings(){
     headRow("Annual default probability by tier") +
     TIERS.map(t=>row(`${t} · ${TIER_LABEL[t]} <span class="dim">${TIER_NAME[t]}</span>`, pct(CFG.PD[t],2), null, true)).join("") +
     row("Product multiplier", "mortgage 0.55× · auto 0.80× · personal 1.15× · card 1.30×", "muted", true) +
-    row("Macro multiplier", "recession 2.5× · normal 1.0× · boom 0.6×", "muted", true) +
+    row("Macro multiplier", "recession 2.5× · normal 0.85× · boom 0.6×", "muted", true) +
     headRow("Loss given default") +
     Object.keys(CFG.LGD).map(k=>row(PRODUCT_LABEL[k], pct(CFG.LGD[k],0), null, true)).join("") +
     headRow("Delinquency") +

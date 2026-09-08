@@ -1064,7 +1064,7 @@ let LEDGER_ERRORS = [];
 
 const IS_LINES = ["intLoans","intSec","intDep","intSub","intWhole","intInterbank","provision","feeOrig","feeLate","feeAnnual",
                   "feeInterchange","feeDebit","feeMerchant","feeService","gainSale","feeWealth","grantIncome","opex","marketing",
-                  "branchOpex","deptUW","deptService","deptQA","opLoss","fraudLoss","compliance","secImpair","tax"];
+                  "branchOpex","branchOpen","deptUW","deptService","deptQA","opLoss","fraudLoss","compliance","secImpair","tax"];
 function blankIS(){ const o={}; for(const k of IS_LINES) o[k]=0; return o; }
 function blankCapital(){
   return { tranches: [], wholesale: [], cocos: [], interbank: [], lastRaise: -9999, raises: 0, raised: 0, raiseFees: 0,
@@ -1076,7 +1076,7 @@ function netIncomeOf(is){
   return is.intLoans + is.intSec - is.intDep - is.intSub - is.intWhole - is.intInterbank - is.provision
        + is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeDebit + is.feeMerchant + is.feeService + is.gainSale
        + is.feeWealth + is.grantIncome
-       - is.opex - is.marketing - is.branchOpex - is.deptUW - is.deptService - is.deptQA - is.opLoss
+       - is.opex - is.marketing - is.branchOpex - is.branchOpen - is.deptUW - is.deptService - is.deptQA - is.opLoss
        - is.fraudLoss - is.compliance - is.secImpair - is.tax;
 }
 function preTaxOf(is){ return netIncomeOf(is) + is.tax; }
@@ -1470,7 +1470,13 @@ function openBranch(region){
   const cost = branchCost(region);
   if(!ensureCash(cost)) return false;
   if(S.gl.cash < cost) return false;
-  post({ cash:-cost, retained:-cost }, "branch-open");
+  // one-time build-out cost — route through income() like every other real
+  // expense so it lands on the P&L, not just the balance sheet. (This used
+  // to post straight to retained earnings, which made the cost vanish off
+  // both the MTD and Lifetime income statements while still silently
+  // draining equity — retained earnings and lifetime net income would
+  // permanently disagree by the sum of every branch ever opened.)
+  income("branchOpen", cost, { cash:-cost, retained:-cost }, "branch-open");
   S.branches.push({ id: S.nextId++, region, opened: S.day, seq: existing+1 });
   logEvent(`Opened a branch in ${region} for ${fmtMoney(cost,0)} — this is branch #${existing+1} there.`, "ok");
   bumpAll(); saveGame();
@@ -2049,7 +2055,7 @@ function processCredit(a){
 
   // secured card: builds credit the way it's supposed to, and can graduate out
   if(a.product === "securedcard" && a.status === "current"){
-    a.score = clamp(a.score + rrange(0, 3), 300, 850);
+    a.score = clamp(a.score + rint(0, 3), 300, 850);
     if(a.score >= CFG.SECURED_CARD_GRADUATE_SCORE) graduateSecuredCard(a);
   }
   // deferment ends before this month's accrual/payment logic runs, so a loan
@@ -3672,6 +3678,26 @@ function migrate(o){
   for(const d of ["underwriting","fraud","service","qa"]) if(!o.departments[d]) o.departments[d] = { budget:0 };
   if(!Array.isArray(o.branches)) o.branches = [];
   if(!o.custIndex) o.custIndex = {};
+  // Branch-opening costs used to post straight to retained earnings without
+  // ever touching the income statement (fixed below, going forward, by
+  // routing them through income()) — so a save carried forward from before
+  // this fix has retained earnings sitting lower than lifetime net income by
+  // exactly what it already spent opening branches, with nothing on screen
+  // to explain the gap. Reconstruct that historical cost from the branches
+  // still open (closeBranch() doesn't refund anything, and a since-closed
+  // branch's original cost can't be recovered from a serialized save) and
+  // backfill it into lifetime net income once, so the two figures agree
+  // again. This never touches mtd/ytd/last — it's a one-time correction of
+  // history, not a current-period expense.
+  if(!o._branchOpenBackfilled){
+    let historicalBranchCost = 0;
+    for(const b of o.branches){
+      const existingAtOpen = Math.max(0, (b.seq||1) - 1);
+      historicalBranchCost += Math.round(CFG.BRANCH_BASE_COST * Math.pow(1+CFG.BRANCH_COST_STEP, existingAtOpen));
+    }
+    if(historicalBranchCost > 0) o.is.life.branchOpen += historicalBranchCost;
+    o._branchOpenBackfilled = true;
+  }
   if(o.stats){
     if(o.stats.autoDecidedApps == null) o.stats.autoDecidedApps = 0;
     if(o.stats.opErrorCount == null) o.stats.opErrorCount = 0;
@@ -3904,7 +3930,7 @@ function renderOverview(){
              + is.feeWealth + is.grantIncome;
   const ni = netIncomeOf(is);
   setText("ovISPeriod", "month to date");
-  const deptTotal = is.deptUW + is.deptService + is.deptQA + is.branchOpex;
+  const deptTotal = is.deptUW + is.deptService + is.deptQA + is.branchOpex + is.branchOpen;
   setHTML("ovIS",
     row("Interest income", fmtMoney(is.intLoans + is.intSec, 0)) +
     row("Interest expense", "("+fmtMoney(is.intDep,0)+")") +
@@ -4211,7 +4237,11 @@ function pfRows(){
       if(q && a.name.toLowerCase().indexOf(q) < 0) return false;
       return true;
     }).map(a => ({ ref:a, name:a.name, product:PRODUCT_LABEL[a.product], tier:a.tier, score:a.score,
-      balance:a.balance, size:a.product==="card"?a.limit:a.principal, apr:a.apr, status:a.status,
+      // every revolving product (card, securedcard, heloc) carries its size in
+      // .limit, not .principal — checking only the literal string "card" left
+      // securedcard and heloc rows reading their (nonexistent) .principal
+      // field here, which rendered as a $0 limit next to a real balance
+      balance:a.balance, size:REVOLVING[a.product]?a.limit:a.principal, apr:a.apr, status:a.status,
       interest:a.lifeInterest + a.lifeFees, opened:a.opened }));
   } else {
     rows = S.depAccts.filter(d => {
@@ -4288,7 +4318,17 @@ function renderPortfolio(){
     card4("Spread", row("Asset yield (last mo, ann.)", rate(yieldPct)) + row("Funding cost (last mo, ann.)", rate(costPct)) +
       row("Net interest margin", rate(yieldPct-costPct), sign(yieldPct-costPct)) + row("Loan-to-deposit", pct(m.ldr))) +
     card4("Delinquency", row("Current", fmtMoney(byStatus.current,0)) + row("30 DPD", fmtMoney(byStatus.d30,0), byStatus.d30?"warn":"") +
-      row("60 DPD", fmtMoney(byStatus.d60,0), byStatus.d60?"warn":"") + row("90+ DPD", fmtMoney(byStatus.d90,0), byStatus.d90?"bad":""))
+      row("60 DPD", fmtMoney(byStatus.d60,0), byStatus.d60?"warn":"") + row("90+ DPD", fmtMoney(byStatus.d90,0), byStatus.d90?"bad":"") +
+      // accounts age exactly one bucket per month, so a shock that pushed a
+      // large cohort to 30 DPD together shows up as that same cohort moving
+      // through 60 then 90 DPD as one wave — a later bucket can outweigh an
+      // earlier one for a month or two on the way through. That is the shape
+      // of a cohort in transit, not a stuck or inverted book; it settles back
+      // once the wave clears the pipeline.
+      ((byStatus.d60 > byStatus.d30*3 || byStatus.d90 > byStatus.d30*3)
+        ? `<div class="hint" style="margin-top:6px">A later bucket outweighing 30 DPD usually means a cohort from a
+             recent shock is moving through together, not a stuck book — check back in a month or two.</div>`
+        : ""))
   );
 
   const cols = PF_COLS[type];
@@ -4308,6 +4348,7 @@ function renderPortfolio(){
       else if(k === "apr" || k === "apy") v = rate(r[k]);
       else if(k === "balance" || k === "size" || k === "interest") v = fmtMoney(r[k]||0, 0);
       else if(k === "tier") v = `<span class="tag t">${r.tier}</span>`;
+      else if(k === "score") v = r[k]==null ? "—" : Math.round(r[k]);
       else v = esc(r[k]==null?"—":r[k]);
       return `<td class="${n?"n":""}">${v}</td>`;
     }).join("") + "</tr>").join(""));
@@ -5110,6 +5151,7 @@ function buildFinancials(){
     row("Operating expense", "("+fmtMoney(is.opex,0)+")", null, true) +
     row("Marketing", "("+fmtMoney(is.marketing,0)+")", null, true) +
     row("Branch overhead", "("+fmtMoney(is.branchOpex,0)+")", null, true) +
+    row("Branch opening costs (one-time)", "("+fmtMoney(is.branchOpen,0)+")", null, true) +
     row("Underwriting department", "("+fmtMoney(is.deptUW,0)+")", null, true) +
     row("Customer service department", "("+fmtMoney(is.deptService,0)+")", null, true) +
     row("QA department", "("+fmtMoney(is.deptQA,0)+")", null, true) +
@@ -5289,8 +5331,15 @@ function auditLedger(){
   let sumDep = 0, sumLoans = 0;
   for(const d of S.depAccts) sumDep += d.status === "open" ? d.balance : 0;
   for(const a of S.loans) sumLoans += isDead(a) ? 0 : a.balance;
+  // retained earnings should always equal cumulative net income since
+  // inception minus cumulative distributions — any other direct write to
+  // retained (a one-time cost or gain posted straight to the balance sheet
+  // without a matching acc() call onto the income statement, the way
+  // branch-opening costs used to) shows up here as a nonzero drift instead
+  // of only being noticed by comparing two tabs by hand.
+  const retainedDrift = S.gl.retained - (netIncomeOf(S.is.life) - S.capital.dividends);
   return { identity:m.identityDrift, depDrift:S.gl.deposits - sumDep, loanDrift:S.gl.grossLoans - sumLoans,
-           errors:LEDGER_ERRORS.length };
+           retainedDrift, errors:LEDGER_ERRORS.length };
 }
 function refreshDev(){
   const a = auditLedger();
@@ -5302,6 +5351,8 @@ function refreshDev(){
     row("Assets − liabilities − equity", a.identity.toFixed(6), ok(a.identity)) +
     row("gl.deposits − Σ account balances", a.depDrift.toFixed(6), ok(a.depDrift)) +
     row("gl.grossLoans − Σ loan balances", a.loanDrift.toFixed(6), ok(a.loanDrift)) +
+    row("Retained earnings − (lifetime net income − dividends)", fmtMoney(a.retainedDrift,2),
+        Math.abs(a.retainedDrift) < 50 ? "good" : "bad") +
     row("Unbalanced journal entries", a.errors, a.errors ? "bad" : "good") +
     (LEDGER_ERRORS.length
       ? `<div class="rule"></div><div style="font-family:var(--mono);font-size:11px;max-height:130px;overflow:auto">` +

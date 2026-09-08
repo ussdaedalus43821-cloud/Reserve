@@ -6092,6 +6092,9 @@ function buildBranches(){
         <h3 style="display:inline;margin-left:8px">${hq}</h3></div>
       <div class="dim">Always staffed · zero overhead · cannot close</div>
     </div>
+    <div class="hint" style="margin-top:6px">Headquarters already gives this region full reach on its own — the
+      same regional weight a supporting branch would add, and it can't be increased further by opening one, so
+      Headquarters doesn't appear in the "open a branch" list below. That's by design, not a bug.</div>
     <div class="rule"></div>` +
     row("Customers originated here", act[hq].customers) +
     row("Deposits gathered here", fmtMoney(act[hq].deposits,0)) +
@@ -6152,11 +6155,13 @@ function buildBranches(){
 
   // open-branch controls, one per region with room left
   const openable = REGIONS.filter(r => r !== hq && branchCountIn(r) < CFG.BRANCH_MAX_PER_REGION);
-  let openHtml = `<div style="display:flex;gap:7px;flex-wrap:wrap">`;
+  let openHtml = `<div class="hint" style="margin-bottom:8px">${hq} (Headquarters) isn't listed here — it already
+    has full regional reach with no branch needed, see above.</div>`;
+  openHtml += `<div style="display:flex;gap:7px;flex-wrap:wrap">`;
   for(const r of openable){
     openHtml += `<button class="btn sm" data-open-branch="${r}">${r} — ${fmtMoney(branchCost(r),0)}</button>`;
   }
-  openHtml += (openable.length ? "" : `<span class="dim">Every region is at its ${CFG.BRANCH_MAX_PER_REGION}-branch cap.</span>`) + `</div>`;
+  openHtml += (openable.length ? "" : `<span class="dim">Every other region is at its ${CFG.BRANCH_MAX_PER_REGION}-branch cap.</span>`) + `</div>`;
   setHTML("brOpenRow", openHtml);
 }
 

@@ -647,6 +647,10 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
           <div class="body" id="setSave"></div>
         </div>
         <div class="card">
+          <h3>Sandbox tools</h3>
+          <div class="body" id="setSandbox"></div>
+        </div>
+        <div class="card">
           <h3>Reference: model assumptions</h3>
           <div class="body" id="setRef"></div>
         </div>
@@ -1150,6 +1154,9 @@ function newGame(bankName, charterKey){
     wealth: { aum: 0 },
     events: { layoff:null, housing:null, competitor:null, regchange:null },
     charterState: { milestoneIdx: 0 },
+    // sandbox tools: off-mechanic conveniences the player reaches for
+    // directly, not events the simulation itself generates
+    sandbox: { freeOpex: false },
 
     is: { mtd: blankIS(), last: blankIS(), ytd: blankIS(), life: blankIS() },
     history: [],
@@ -1162,7 +1169,7 @@ function newGame(bankName, charterKey){
              peakAssets:0, peakEquity:0, lifetimeInterest:0, monthApproved:0, monthDecided:0,
              everBailedOut: false, fraudLossAmt:0, fraudLossCount:0, complianceAudits:0,
              complianceFines:0, grantReceived:0, autoDecidedApps:0, opErrorCount:0, opErrorCost:0,
-             crossSellBooked:0 },
+             crossSellBooked:0, sandboxUsed:false },
     log: [], decisions: [],
   };
   LEDGER_ERRORS = [];
@@ -3250,11 +3257,15 @@ function monthClose(){
   const delta = gap * (gap >= 0 ? CFG.PROVISION_UP : CFG.PROVISION_DOWN);
   if(Math.abs(delta) > 0.01) income("provision", delta, { allowance:delta, retained:-delta }, "provision");
 
-  // operating costs
+  // operating costs — sandbox tools can waive the recurring fixed/variable
+  // overhead line entirely; everything else (marketing, department spend,
+  // credit losses) still runs at full cost
   const m = M();
-  const opex = m.projOpex;
-  if(!ensureCash(opex)) return liquidityFailure(opex);
-  income("opex", opex, { cash:-opex, retained:-opex }, "opex");
+  const opex = (S.sandbox && S.sandbox.freeOpex) ? 0 : m.projOpex;
+  if(opex > 0){
+    if(!ensureCash(opex)) return liquidityFailure(opex);
+    income("opex", opex, { cash:-opex, retained:-opex }, "opex");
+  }
   if(S.marketing.budget > 0){
     const mk = S.marketing.budget;
     if(!ensureCash(mk)) return liquidityFailure(mk);
@@ -3703,7 +3714,9 @@ function migrate(o){
     if(o.stats.opErrorCount == null) o.stats.opErrorCount = 0;
     if(o.stats.opErrorCost == null) o.stats.opErrorCost = 0;
     if(o.stats.crossSellBooked == null) o.stats.crossSellBooked = 0;
+    if(o.stats.sandboxUsed == null) o.stats.sandboxUsed = false;
   }
+  if(!o.sandbox) o.sandbox = { freeOpex: false };
   return o;
 }
 function adoptState(obj){
@@ -5324,6 +5337,25 @@ function buildSettings(){
     row("Non-accrual at", "90 days past due", null, true) +
     row("Allowance target", "one year of expected loss (balance × PD × LGD)", null, true));
 
+  setHTML("setSandbox",
+    `<div class="hint" style="margin-bottom:9px">Not part of the simulation — nothing here is a real event, an
+      achievement, or something the bank "did." Use it to get unstuck, skip a grind, or just relax the challenge.
+      ${S.stats.sandboxUsed ? `<b>Used this run.</b>` : ""}</div>` +
+    `<div style="font-size:11px;color:var(--text-2);margin:6px 0 4px">Add capital</div>` +
+    `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">` +
+      [[500000,"+$500K"],[2000000,"+$2M"],[10000000,"+$10M"]].map(([amt,l])=>
+        `<button class="btn sm" data-sandbox="capital" data-amt="${amt}">${l}</button>`).join("") +
+    `</div>` +
+    `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">` +
+      `<button class="btn sm" data-sandbox="cure">Cure all delinquent loans</button>` +
+      `<button class="btn sm" data-sandbox="rep">Reset reputation to 100</button>` +
+      `<button class="btn sm" data-sandbox="clearreg">Clear regulatory strikes</button>` +
+    `</div>` +
+    `<label class="switch"><input type="checkbox" data-bind="sandbox.freeOpex" data-re="settings" ${S.sandbox.freeOpex?"checked":""}>
+      Waive monthly operating expenses</label>
+     <div class="hint">Marketing, department spend, and credit losses still cost what they cost — this only zeroes
+       the base overhead line.</div>`);
+
   refreshDev();
 }
 function auditLedger(){
@@ -5664,6 +5696,7 @@ function showGameOver(){
         <div class="gostat"><div class="k">Government support</div><div class="v">${S.stats.everBailedOut ? fmtCompact(S.capital.bailoutReceived)+" (marked)" : "never needed"}</div></div>
         <div class="gostat"><div class="k">Largest size reached</div><div class="v">${sizeTier(o.peakAssets)}</div></div>
       </div>
+      ${S.stats.sandboxUsed ? `<div class="hint" style="margin-top:10px">Sandbox tools were used during this run.</div>` : ""}
       <div class="hint" style="margin-top:10px">The failed bank stays on screen behind this dialog if you want to
         read the financials before starting over.</div>
     </div>
@@ -5879,6 +5912,29 @@ function wire(){
     const sp = e.target.closest("[data-speed2]");
     if(sp){ setSpeed(+sp.dataset.speed2); return; }
     if(e.target.id === "btnAudit"){ refreshDev(); return; }
+    const sb = e.target.closest("[data-sandbox]");
+    if(sb){
+      const kind = sb.dataset.sandbox;
+      S.stats.sandboxUsed = true;
+      if(kind === "capital"){
+        const amt = +sb.dataset.amt;
+        post({ cash: amt, paidIn: amt }, "sandbox-capital");
+        toast("Sandbox", `${fmtMoney(amt)} of capital added.`, "ok");
+      } else if(kind === "cure"){
+        let n = 0;
+        for(const a of S.loans) if(!isDead(a) && a.missed > 0){ a.missed = 0; a.status = "current"; a.lastPay = S.day; n++; }
+        toast("Sandbox", n ? `Cured ${n} delinquent account${n===1?"":"s"}.` : "Nothing was delinquent.", "ok");
+      } else if(kind === "rep"){
+        S.rep = 100;
+        toast("Sandbox", "Reputation reset to 100.", "ok");
+      } else if(kind === "clearreg"){
+        S.reg.capStrikes = 0; S.reg.resStrikes = 0; S.reg.restricted = false;
+        S.reg.forbearanceActive = false; S.reg.pendingForbearance = false; S.reg.breachDays = 0;
+        toast("Sandbox", "Regulatory strikes and restrictions cleared.", "ok");
+      }
+      bumpAll(); saveGame(); buildSettings();
+      return;
+    }
     if(e.target.id === "btnSaveNow"){ saveGame(); toast("Saved", "Game state written to browser storage.", "ok"); buildSettings(); return; }
     if(e.target.id === "btnExport"){
       const blob = new Blob([JSON.stringify(packState(false))], { type:"application/json" });

@@ -505,6 +505,10 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
           <h3>Internal risk limits</h3>
           <div class="body" id="rsLimits"></div>
         </div>
+        <div class="card">
+          <h3>New-product underwriting</h3>
+          <div class="body" id="rsNewProducts"></div>
+        </div>
       </div>
     </section>
 
@@ -520,9 +524,19 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
           <div class="body" id="mkPipeline"></div>
         </div>
       </div>
-      <div class="card">
+      <div class="card" style="margin-bottom:12px">
         <h3>Reputation drivers</h3>
         <div class="body" id="mkRep"></div>
+      </div>
+      <div class="grid g2">
+        <div class="card">
+          <h3>Fraud &amp; compliance</h3>
+          <div class="body" id="mkFraud"></div>
+        </div>
+        <div class="card">
+          <h3>Regional targeting</h3>
+          <div class="body" id="mkRegion"></div>
+        </div>
       </div>
     </section>
 
@@ -689,16 +703,19 @@ const CFG = {
   DEP_PREMIUM: { checking: 0.060, savings: 0.030, cd: 0.005 },
 
   // risk weights for the capital ratio
-  RW: { cash:0, securities:0.20, mortgage:0.50, auto:0.50, personal:1.00, card:1.00 },
-  CCF_CARD: 0.50,            // credit-conversion factor on undrawn card lines
-  CARD_CASH_DRAW: 0.25,      // liquidity assumed drawn at card origination
+  RW: { cash:0, securities:0.20, mortgage:0.50, auto:0.50, personal:1.00, card:1.00,
+        heloc:0.50, studentloan:1.00, sbloan:1.00, securedcard:0.00 },
+  CCF_CARD: 0.50,            // credit-conversion factor on undrawn revolving lines (card/HELOC/secured card)
+  CARD_CASH_DRAW: 0.25,      // liquidity assumed drawn at card-like origination
 
   // loss given default
-  LGD: { mortgage:0.25, auto:0.45, personal:0.85, card:0.90 },
+  LGD: { mortgage:0.25, auto:0.45, personal:0.85, card:0.90,
+         heloc:0.35, studentloan:0.75, sbloan:0.65, securedcard:0.05 },
 
   // annualised probability of default by credit tier (base case)
   PD: { A:0.003, B:0.008, C:0.020, D:0.060, E:0.150 },
-  PD_PRODUCT: { mortgage:0.55, auto:0.80, personal:1.15, card:1.30 },
+  PD_PRODUCT: { mortgage:0.55, auto:0.80, personal:1.15, card:1.30,
+                heloc:0.65, studentloan:0.70, sbloan:1.20, securedcard:1.00 },
   MACRO_PD: { recession:2.5, normal:1.0, boom:0.6 },
   CURE: { secured:0.34, unsecured:0.26 },   // monthly probability a delinquent account cures
   CHARGEOFF_AT: 4,           // missed payments before charge-off (120 DPD)
@@ -713,7 +730,8 @@ const CFG = {
   ARRIVE_BASE: 2.6,          // applicants/day at reputation 50, no marketing, de novo scale
   QUEUE_CAP: 60,
   APP_TTL: 14,               // days before an unreviewed application walks away
-  MIX: { deposit:0.44, card:0.22, personal:0.14, auto:0.13, mortgage:0.07 },
+  MIX: { deposit:0.40, card:0.16, personal:0.10, auto:0.09, mortgage:0.06,
+         heloc:0.05, studentloan:0.05, sbloan:0.04, securedcard:0.05 },
 
   // deposits
   KYC_THRESHOLD: 250000,     // deposits above this get a compliance review
@@ -731,17 +749,68 @@ const CFG = {
   MAX_HISTORY: 720, MAX_LOG: 120, MAX_DECISIONS: 60,
   PRUNE_AFTER_DAYS: 180,     // dead accounts older than this are dropped entirely
   SAVE_BUDGET: 4000000,      // bytes; past this the save sheds closed accounts
+
+  // --- CD laddering -------------------------------------------------------
+  CD_TERMS: [3, 6, 12, 24, 60],           // months on offer
+  CD_TERM_MULT: { 3:0.55, 6:0.68, 12:0.80, 24:0.92, 60:1.05 },  // of the 12mo base rate curve, by term
+  CD_EARLY_PENALTY_MONTHS: 3,             // months of interest forfeited on an early break
+
+  // --- HELOC: revolving, secured, variable-rate ----------------------------
+  HELOC_EQUITY_ADVANCE: 0.80,             // max combined draw as a share of assumed home equity
+
+  // --- student loans: long fixed installment, thin-file friendly ----------
+  STUDENT_TERMS: [120, 180, 240],         // 10/15/20yr, months
+  STUDENT_DEFER_MONTHS: 12,               // length of a deferment grant, per request
+
+  // --- small-business loans: revenue/DSCR underwritten ---------------------
+  SB_TERMS: [60, 84, 120],
+  SB_GUARANTEE_RW: 0.0,                   // risk weight on the government-guaranteed slice
+  SB_GUARANTEE_MAX: 0.75,                 // SBA-style cap on the guaranteed share
+
+  // --- secured cards: cash-collateralised, thin-file/credit-building -------
+  SECURED_CARD_GRADUATE_SCORE: 660,       // score at which a secured cardholder graduates to unsecured
+
+  // --- fraud & compliance ---------------------------------------------------
+  FRAUD_BASE_RATE: 0.020,     // share of originations that are secretly fraudulent at zero spend
+  FRAUD_MIN_RATE: 0.002,      // floor — never fully eliminable
+  FRAUD_SPEND_HALF: 6000,     // monthly $ spend that halves the gap to the floor (diminishing returns)
+  FRAUD_REVEAL_MIN_DAYS: 30, FRAUD_REVEAL_MAX_DAYS: 210,   // delay before a fraud loan implodes
+  COMPLIANCE_AUDIT_CHANCE: 0.05,          // monthly chance of a regulator audit
+  COMPLIANCE_VIOLATION_BASE: 0.60,        // chance a violation is found, at zero spend
+  COMPLIANCE_FINE_ASSET_BPS: 0.0015,      // fine as a share of assets when a violation is found
+  COMPLIANCE_FINE_MIN: 4000,
+  COMPLIANCE_REP_HIT: 7,
+  COMPLIANCE_MINOR_COST: 800,             // cheap-to-fix finding when spend is adequate
+  FRAUD_RING_CHANCE: 0.0025,              // tiny monthly chance of a delayed-reveal fraud ring
+
+  // --- wealth management (Private/Wealth charter) ---------------------------
+  WEALTH_REFERRAL_MULT: 1.6,              // AUM referred in per $ of qualifying deposit/loan relationship
+  WEALTH_FEE_BPS_YR: 0.0075,              // annual advisory fee on AUM
+  WEALTH_AUM_DRIFT: 0.006,                // monthly organic AUM growth/decay noise
+
+  // --- narrative macro events -------------------------------------------
+  EVT_LAYOFF_CHANCE: 0.010, EVT_LAYOFF_MONTHS: 8, EVT_LAYOFF_PD_MULT: 3.0,
+  EVT_HOUSING_CHANCE: 0.006, EVT_HOUSING_MONTHS: 14, EVT_HOUSING_LGD_MULT: 1.6, EVT_HOUSING_DEMAND_MULT: 0.45,
+  EVT_COMPETITOR_CHANCE: 0.012, EVT_COMPETITOR_MONTHS: 4, EVT_COMPETITOR_ARRIVAL_MULT: 1.45, EVT_COMPETITOR_DEP_MULT: 1.35,
+  EVT_RATESHOCK_CHANCE: 0.02, EVT_RATESHOCK_MIN: 0.25, EVT_RATESHOCK_MAX: 1.0,
+  EVT_REGCHANGE_CHANCE: 0.006, EVT_REGCHANGE_MONTHS: 24, EVT_REGCHANGE_MAX: 0.02,
 };
 
 const TIERS = ["A","B","C","D","E"];
 const TIER_MIN = { A:800, B:740, C:670, D:580, E:300 };
 const TIER_LABEL = { A:"800+", B:"740–799", C:"670–739", D:"580–669", E:"below 580" };
 const TIER_NAME = { A:"Super-prime", B:"Prime", C:"Near-prime", D:"Subprime", E:"Deep subprime" };
-const PRODUCTS = ["card","personal","auto","mortgage"];
+const PRODUCTS = ["card","personal","auto","mortgage","heloc","studentloan","sbloan","securedcard"];
 const PRODUCT_LABEL = { card:"Credit card", personal:"Personal loan", auto:"Auto loan",
-                        mortgage:"Mortgage", deposit:"Deposit account" };
-const SECURED = { mortgage:true, auto:true, personal:false, card:false };
-const TERMS = { personal:[24,36,48,60], auto:[48,60,72], mortgage:[360] };
+                        mortgage:"Mortgage", heloc:"HELOC", studentloan:"Student loan",
+                        sbloan:"Small-business loan", securedcard:"Secured card", deposit:"Deposit account" };
+// revolving lines carry an undrawn-line RWA add-on like a card, instead of a fixed installment schedule
+const REVOLVING = { card:true, heloc:true, securedcard:true };
+const SECURED = { mortgage:true, auto:true, personal:false, card:false,
+                   heloc:true, studentloan:false, sbloan:false, securedcard:true };
+const TERMS = { personal:[24,36,48,60], auto:[48,60,72], mortgage:[360],
+                studentloan:CFG.STUDENT_TERMS, sbloan:CFG.SB_TERMS };
+const REGIONS = ["Northside","Riverfront","Old Mill","Eastgate","Lakeview","Highland"];
 
 // spread over the market policy rate used to derive the prevailing market APR
 const MKT_SPREAD = {
@@ -749,16 +818,52 @@ const MKT_SPREAD = {
   personal: { A:3.0, B:5.0,  C:8.0,  D:13.0, E:18.0 },
   auto:     { A:1.0, B:2.0,  C:4.0,  D:7.0,  E:11.0 },
   mortgage: { A:0.8, B:1.2,  C:2.0,  D:3.5,  E:5.5  },
+  heloc:      { A:2.0, B:3.2,  C:5.0,  D:8.0,  E:12.0 },
+  studentloan:{ A:1.5, B:2.5,  C:4.0,  D:6.0,  E:9.0  },
+  sbloan:     { A:2.5, B:4.0,  C:6.5,  D:10.0, E:14.0 },
+  securedcard:{ A:5.0, B:5.0,  C:5.0,  D:5.0,  E:5.0  },
 };
 const DEP_MKT_MULT = { checking:0.08, savings:0.55, cd:0.80 };  // of the market policy rate
 
-const DIFFICULTIES = {
-  denovo:      { key:"denovo", name:"De novo (tight)", capital:2_000_000, deposits:1_000_000,
-                 rep:50, note:"Newly chartered. Capital is thin and the deposit base is tiny — you have to fund growth before you can lend it." },
-  comfortable: { key:"comfortable", name:"Comfortable", capital:5_000_000, deposits:10_000_000,
-                 rep:58, note:"An established community bank. Room to underwrite from day one; the ratios only bite once you have grown into them." },
-  hard:        { key:"hard", name:"Undercapitalised (hard)", capital:1_200_000, deposits:500_000,
-                 rep:38, note:"A troubled charter handed to you. Reputation is poor, capital is short, and the regulator is already watching." },
+// Bank charters: the new-game choice. Each sets starting numbers, which
+// products are live on day one, and a distinct pressure/unlock mechanic.
+const CHARTERS = {
+  community: { key:"community", name:"Community Bank",
+    capital:3_000_000, deposits:6_000_000, rep:55,
+    depositChurnMult:0.55, marketingMult:1.0, repSwingMult:1.0,
+    wealthUnlocked:false, wealthUnlockAssets:500_000_000,
+    auditMult:1.0, craRelief:0, grantIncome:0, milestones:null,
+    startProducts:{ card:true, personal:true, auto:true, mortgage:true,
+                     heloc:true, studentloan:true, sbloan:false, securedcard:true },
+    note:"Modest capital, loyal local depositors who rarely run — but the deposit base grows slowly and has a lower ceiling. No wealth management or large commercial lending until the bank has grown into real scale." },
+  aggressive: { key:"aggressive", name:"Aggressive Growth (De novo)",
+    capital:8_000_000, deposits:2_000_000, rep:50,
+    depositChurnMult:1.35, marketingMult:1.6, repSwingMult:1.8,
+    wealthUnlocked:false, wealthUnlockAssets:Infinity,
+    auditMult:1.0, craRelief:0, grantIncome:0,
+    milestones:[ {day:360, minAssets:20_000_000}, {day:720, minAssets:55_000_000}, {day:1080, minAssets:120_000_000} ],
+    startProducts:{ card:true, personal:true, auto:true, mortgage:true,
+                     heloc:true, studentloan:true, sbloan:true, securedcard:true },
+    note:"Venture-backed capital and marketing that hits twice as hard — but investors set deposit/asset milestones. Miss one and they pull funding." },
+  private: { key:"private", name:"Private / Wealth Bank",
+    capital:12_000_000, deposits:4_000_000, rep:60,
+    depositChurnMult:0.9, marketingMult:0.8, repSwingMult:0.9,
+    wealthUnlocked:true, wealthUnlockAssets:0,
+    auditMult:2.5, craRelief:0, grantIncome:0, milestones:null,
+    arriveMult:0.16, sizeMult:6.0,
+    maxAmount:{ card:80000, mortgage:3_000_000, heloc:450_000, sbloan:1_500_000 },
+    startProducts:{ card:true, personal:false, auto:false, mortgage:true,
+                     heloc:true, studentloan:false, sbloan:true, securedcard:false },
+    note:"Far fewer, far wealthier clients — high average balances, wealth-management advisory fees from day one. Compliance scrutiny and audit frequency are visibly stricter." },
+  cdfi: { key:"cdfi", name:"Community Development Bank",
+    capital:2_000_000, deposits:1_000_000, rep:48,
+    depositChurnMult:1.0, marketingMult:1.0, repSwingMult:1.0,
+    wealthUnlocked:false, wealthUnlockAssets:Infinity,
+    auditMult:1.0, craRelief:0.02, grantIncome:3500, milestones:null,
+    startProducts:{ card:true, personal:true, auto:true, mortgage:false,
+                     heloc:false, studentloan:true, sbloan:true, securedcard:true },
+    startPolicy:{ minScore:560, autoApprove:680, autoDecline:560, maxDTI:0.48 },
+    note:"Leans into secured cards and credit-building from day one, serving a riskier pool by design — offset by CRA-style capital relief and steady grant income. Hard mode with a subsidy." },
 };
 
 const SIZE_TIERS = [
@@ -840,7 +945,7 @@ let S = null;
 let LEDGER_ERRORS = [];
 
 const IS_LINES = ["intLoans","intSec","intDep","intSub","intWhole","intInterbank","provision","feeOrig","feeLate","feeAnnual",
-                  "feeInterchange","feeService","gainSale","opex","marketing","tax"];
+                  "feeInterchange","feeService","gainSale","feeWealth","grantIncome","opex","marketing","fraudLoss","compliance","tax"];
 function blankIS(){ const o={}; for(const k of IS_LINES) o[k]=0; return o; }
 function blankCapital(){
   return { tranches: [], wholesale: [], cocos: [], interbank: [], lastRaise: -9999, raises: 0, raised: 0, raiseFees: 0,
@@ -851,7 +956,8 @@ function blankCapital(){
 function netIncomeOf(is){
   return is.intLoans + is.intSec - is.intDep - is.intSub - is.intWhole - is.intInterbank - is.provision
        + is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService + is.gainSale
-       - is.opex - is.marketing - is.tax;
+       + is.feeWealth + is.grantIncome
+       - is.opex - is.marketing - is.fraudLoss - is.compliance - is.tax;
 }
 function preTaxOf(is){ return netIncomeOf(is) + is.tax; }
 
@@ -862,14 +968,15 @@ function defaultRates(marketRate){
   return { dep, loan };
 }
 
-function newGame(bankName, diffKey){
-  const diff = DIFFICULTIES[diffKey] || DIFFICULTIES.denovo;
+function newGame(bankName, charterKey){
+  const ch = CHARTERS[charterKey] || CHARTERS.community;
   const seed = (Math.random()*4294967296)>>>0;
   const marketRate = 4.25;
+  const sp = ch.startPolicy || {};
   S = {
     v: 1,
     bankName: bankName || "Reserve Trust",
-    difficulty: diff.key,
+    charter: ch.key,
     rngState: seed|0,
     day: 0,
     dayAcc: 0,
@@ -878,28 +985,39 @@ function newGame(bankName, diffKey){
     nextId: 1,
 
     // general ledger
-    gl: { cash: diff.capital + diff.deposits, securities: 0, grossLoans: 0,
-          allowance: 0, deposits: diff.deposits, subDebt: 0, wholesale: 0, interbank: 0, secBookYield: 0,
-          paidIn: diff.capital, retained: 0 },
+    gl: { cash: ch.capital + ch.deposits, securities: 0, grossLoans: 0,
+          allowance: 0, deposits: ch.deposits, subDebt: 0, wholesale: 0, interbank: 0, secBookYield: 0,
+          paidIn: ch.capital, retained: 0 },
     capital: blankCapital(),
 
     loans: [], depAccts: [], apps: [],
     rates: defaultRates(marketRate),
     fees: { origPct: 1.0, lateFee: 35, cardAnnual: 0, depMonthly: 0 },
     policy: {
-      minScore: 620, maxDTI: 0.43,
-      autoApprove: 740, autoDecline: 640,
-      products: { card:true, personal:true, auto:true, mortgage:true },
+      minScore: sp.minScore!=null?sp.minScore:620, maxDTI: sp.maxDTI!=null?sp.maxDTI:0.43,
+      autoApprove: sp.autoApprove!=null?sp.autoApprove:740, autoDecline: sp.autoDecline!=null?sp.autoDecline:640,
+      products: Object.assign({}, ch.startProducts),
       depositProducts: { checking:true, savings:true, cd:true },
       targetReserve: 0.16, targetCapital: 0.11,   // internal limits, above the regulatory floors
-      maxAmount: { card:25000, personal:40000, auto:60000, mortgage:500000 },
+      maxAmount: Object.assign({ card:25000, personal:40000, auto:60000, mortgage:500000,
+                   heloc:75000, studentloan:80000, sbloan:250000, securedcard:5000 }, ch.maxAmount||{}),
       sweep: false, sweepBuffer: 0.18,
       apyEmergency: 0,
+      heloc: { minScore:660, maxDTI:0.43 },
+      studentloan: { minHistoryMonths:24, thinFileMinScore:580, maxDTI:0.45 },
+      sbloan: { minDSCR:1.25, guaranteedPct:0 },
+      securedcard: { minCollateral:200 },
+      fcSpend: 0,                    // fraud & compliance investment — 0 is a valid playstyle
+      regionTarget: "", regionBudget: 0,
+      cdTerm: 12,
     },
     marketing: { budget: 0, mix: { brand:1, deposit:1, lending:1 } },
     macro: { rate: marketRate, econ: "normal", econMonths: 0,
              repriceMonths: CFG.RATE_REPRICE_MONTHS, monthsSinceReprice: 0 },
-    rep: diff.rep,
+    rep: ch.rep,
+    wealth: { aum: 0 },
+    events: { layoff:null, housing:null, competitor:null, regchange:null },
+    charterState: { milestoneIdx: 0 },
 
     is: { mtd: blankIS(), last: blankIS(), ytd: blankIS(), life: blankIS() },
     history: [],
@@ -910,12 +1028,13 @@ function newGame(bankName, diffKey){
     stats: { customersServed:0, appsReceived:0, appsApproved:0, appsDeclined:0,
              appsExpired:0, offersDeclined:0, chargeOffs:0, chargeOffAmt:0,
              peakAssets:0, peakEquity:0, lifetimeInterest:0, monthApproved:0, monthDecided:0,
-             everBailedOut: false },
+             everBailedOut: false, fraudLossAmt:0, fraudLossCount:0, complianceAudits:0,
+             complianceFines:0, grantReceived:0 },
     log: [], decisions: [],
   };
   LEDGER_ERRORS = [];
-  seedDeposits(diff.deposits);
-  logEvent("Charter granted. " + fmtMoney(diff.capital) + " of paid-in capital on deposit at the Fed.", "ok");
+  seedDeposits(ch.deposits);
+  logEvent("Charter granted. " + fmtMoney(ch.capital) + " of paid-in capital on deposit at the Fed.", "ok");
   bumpAll();
   return S;
 }
@@ -938,11 +1057,13 @@ function seedDeposits(total){
   if(Math.abs(drift) > 0.005 && S.depAccts.length) S.depAccts[0].balance += drift;
 }
 
-function makeDepositAccount(name, kind, balance, seeded){
+function makeDepositAccount(name, kind, balance, seeded, term){
+  const cdTerm = kind==="cd" ? (term || pick(CFG.CD_TERMS)) : null;
   return {
     id: S.nextId++, name, kind, balance,
-    apy: kind==="cd" ? S.rates.dep.cd : null,     // CDs lock their rate at origination
-    maturity: kind==="cd" ? S.day + CFG.CD_TERM*CFG.DAYS_PER_MONTH : null,
+    term: cdTerm,
+    apy: kind==="cd" ? cdTermAPY(cdTerm) : null,     // CDs lock their rate at origination
+    maturity: kind==="cd" ? S.day + cdTerm*CFG.DAYS_PER_MONTH : null,
     opened: S.day - (seeded ? rint(0, 400) : 0),
     status: "open",
     beta: clamp(0.35 + 0.5*rnd(), 0.2, 0.95),      // rate sensitivity
@@ -976,7 +1097,7 @@ function M(){
   if(_mCacheV === _mv && _mCache) return _mCache;
   const g = S.gl;
   let rwaCredit = 0, cardUndrawn = 0, gross = 0, delinq = 0, npl = 0, active = 0, projInt = 0;
-  const byProd = { card:0, personal:0, auto:0, mortgage:0 };
+  const byProd = { card:0, personal:0, auto:0, mortgage:0, heloc:0, studentloan:0, sbloan:0, securedcard:0 };
   let expLoss = 0;
   for(let i=0;i<S.loans.length;i++){
     const a = S.loans[i];
@@ -984,17 +1105,17 @@ function M(){
     active++;
     gross += a.balance;
     byProd[a.product] += a.balance;
-    rwaCredit += a.balance * CFG.RW[a.product];
-    if(a.product==="card"){
+    rwaCredit += a.balance * rwOf(a.product, a.guaranteedPct);
+    if(REVOLVING[a.product]){
       const und = Math.max(0, a.limit - a.balance);
       cardUndrawn += und;
-      rwaCredit += und * CFG.CCF_CARD * CFG.RW.card;
+      rwaCredit += und * CFG.CCF_CARD * CFG.RW[a.product];
     }
     if(a.missed>0){ delinq += a.balance; if(a.missed>=3) npl += a.balance; }
-    expLoss += a.balance * pdAnnual(a) * CFG.LGD[a.product];
+    expLoss += a.balance * pdAnnual(a) * lgdOf(a);
     // mirrors processCredit's accrual gate exactly, so the live projection
     // and the real month-end number are computed the same way
-    if(a.missed < 3 && (a.product !== "card" || a.revolver || a.missed > 0) && a.balance > 0)
+    if(a.missed < 3 && (!REVOLVING[a.product] || a.revolver || a.missed > 0) && a.balance > 0)
       projInt += a.balance * a.apr / 1200;
   }
   let openDep = 0, projDepInt = 0;
@@ -1057,7 +1178,9 @@ function pdAnnual(a){
   // seasoning: fresh paper defaults a little less than paper 12-30 months old
   const ageM = (S.day - a.opened)/CFG.DAYS_PER_MONTH;
   const season = ageM < 4 ? 0.55 + 0.11*ageM : ageM > 48 ? 0.75 : 1.0;
-  return clamp(base*dtiAdj*season, 0.0005, 0.85);
+  const layoff = S.events.layoff;
+  const regionAdj = (layoff && S.day < layoff.until && a.region === layoff.region) ? CFG.EVT_LAYOFF_PD_MULT : 1;
+  return clamp(base*dtiAdj*season*regionAdj, 0.0005, 0.85);
 }
 function sizeTier(assets){ for(const [cap,label] of SIZE_TIERS) if(assets<cap) return label; return "money-center"; }
 function marketDepAPY(kind){ return S.macro.rate * DEP_MKT_MULT[kind]; }
@@ -1082,8 +1205,10 @@ const DIRTY = { kpi:true, overview:true, apps:true, portfolio:true, rates:true,
 let counterOpen = null;
 function bumpAll(){ for(const k in DIRTY) DIRTY[k]=true; }
 
+function charterCfg(){ return CHARTERS[S.charter] || CHARTERS.community; }
 function marketingFactor(){
-  const b = S.marketing.budget;
+  const mkMult = charterCfg().marketingMult || 1;
+  const b = S.marketing.budget * mkMult;
   const strength = Math.min(1, b/15000);
   const mx = S.marketing.mix;
   const tot = mx.brand + mx.deposit + mx.lending || 1;
@@ -1099,7 +1224,10 @@ function arrivalRate(){
   const restrictF = S.reg.restricted ? 0.7 : 1;
   const runF = S.run.active ? 0.35 : 1;
   const brandF = clamp(1 + 0.22*(mf.brand-1), 0.75, 1.35);
-  return CFG.ARRIVE_BASE * repF * mf.spendMult * scale * econF * restrictF * runF * brandF;
+  const charterF = charterCfg().arriveMult || 1;
+  const comp = S.events.competitor;
+  const compF = (comp && S.day < comp.until) ? CFG.EVT_COMPETITOR_ARRIVAL_MULT : 1;
+  return CFG.ARRIVE_BASE * repF * mf.spendMult * scale * econF * restrictF * runF * brandF * charterF * compF;
 }
 function poisson(lambda){
   if(lambda <= 0) return 0;
@@ -1113,17 +1241,38 @@ function productMix(){
   const mix = {};
   mix.deposit = CFG.MIX.deposit * (0.5 + 0.5*mf.deposit);
   for(const p of PRODUCTS) mix[p] = CFG.MIX[p] * (0.5 + 0.5*mf.lending) * (S.policy.products[p] ? 1 : 0.25);
+  const housing = S.events.housing;
+  if(housing && S.day < housing.until){
+    mix.mortgage *= CFG.EVT_HOUSING_DEMAND_MULT;
+    mix.heloc *= CFG.EVT_HOUSING_DEMAND_MULT;
+  }
   return mix;
 }
 
+function pickRegion(){
+  const rb = S.policy.regionBudget||0, tgt = S.policy.regionTarget;
+  if(tgt && rb > 0){
+    const share = clamp(0.4 + 0.4*Math.log(1+rb/4000)/Math.log(6), 0.4, 0.85);
+    if(rnd() < share) return tgt;
+  }
+  return pick(REGIONS);
+}
 function makeApplicant(){
   const score = clamp(Math.round(680 + 90*randn()), 300, 850);
   const z = (score - 680)/90;
-  const income = Math.round(Math.exp(8.35 + 0.45*randn() + 0.22*z));
+  const sizeMult = charterCfg().sizeMult || 1;
+  const income = Math.round(Math.exp(8.35 + 0.45*randn() + 0.22*z) * sizeMult);
   const debtRatio = clamp(0.06 + 0.20*rnd() - 0.085*z + 0.05*randn(), 0, 0.60);
   const age = clamp(Math.round(24 + Math.abs(randn())*13 + rnd()*8), 21, 76);
+  // credit-history length: correlates with age but has real spread — a 40-year-old
+  // who just moved to the country is thin-file too, not just the young
+  const historyMonths = clamp(Math.round((age-18)*12*(0.15+0.8*rnd())), 0, 600);
+  const homeEquity = Math.round(income*(3+9*rnd()));
+  const bizRevenue = Math.round(Math.exp(11.5 + 0.55*randn() + 0.15*z) * sizeMult);
+  const bizDSCR = clamp(0.5 + 1.3*rnd() + (score-680)/900, 0.25, 2.6);
   return { name: randomName(), age, income, score, tier: tierOf(score),
-           debtPmt: Math.round(debtRatio*income), existingDTI: debtRatio };
+           debtPmt: Math.round(debtRatio*income), existingDTI: debtRatio,
+           historyMonths, homeEquity, bizRevenue, bizDSCR, region: pickRegion() };
 }
 
 function requestedAmount(c, product){
@@ -1133,6 +1282,10 @@ function requestedAmount(c, product){
     case "personal": return clamp(Math.round(c.income*(2+8*rnd())*sf/100)*100, 2000, 60000);
     case "auto":     return clamp(Math.round(c.income*(3+9*rnd())*sf/100)*100, 6000, 90000);
     case "mortgage": return clamp(Math.round(c.income*(28+46*rnd())*sf/1000)*1000, 90000, 900000);
+    case "heloc":    return clamp(Math.round(c.homeEquity*CFG.HELOC_EQUITY_ADVANCE*(0.35+0.55*rnd())/100)*100, 5000, 250000);
+    case "studentloan": return clamp(Math.round((8000+52000*rnd())/500)*500, 3000, 120000);
+    case "sbloan":   return clamp(Math.round(c.bizRevenue*(0.15+0.55*rnd())/1000)*1000, 10000, 500000);
+    case "securedcard": return clamp(Math.round(c.income*(0.05+0.22*rnd())/100)*100, 200, 5000);
   }
   return 0;
 }
@@ -1142,43 +1295,67 @@ function makeApplication(){
   const product = weighted(productMix());
   const app = { id: S.nextId++, day: S.day, expires: S.day + CFG.APP_TTL, product,
                 name:c.name, age:c.age, income:c.income, score:c.score, tier:c.tier,
-                debtPmt:c.debtPmt, existingDTI:c.existingDTI };
+                debtPmt:c.debtPmt, existingDTI:c.existingDTI, historyMonths:c.historyMonths,
+                homeEquity:c.homeEquity, bizRevenue:c.bizRevenue, bizDSCR:c.bizDSCR, region:c.region };
   if(product === "deposit"){
       app.kind = weighted(CFG.DEP_KIND);
-    app.requested = Math.max(250, Math.round(Math.exp(8.4 + 1.15*randn()) * (0.7 + 0.8*rnd())));
+    app.requested = Math.max(250, Math.round(Math.exp(8.4 + 1.15*randn()) * (0.7 + 0.8*rnd()) * (charterCfg().sizeMult||1)));
     app.amount = app.requested;
-    app.apy = effectiveDepAPY(app.kind);
+    if(app.kind === "cd") app.term = pick(CFG.CD_TERMS);
+    app.apy = effectiveDepAPY(app.kind, app.term);
     return app;
   }
   app.requested = requestedAmount(c, product);
   app.amount = Math.min(app.requested, S.policy.maxAmount[product]);
-  app.term = product === "card" ? 0 : pick(TERMS[product]);
+  app.term = REVOLVING[product] ? 0 : pick(TERMS[product]);
   app.apr = S.rates.loan[product][c.tier];
   app.payment = monthlyObligation(product, app.amount, app.apr, app.term);
   app.dti = (c.debtPmt + app.payment)/c.income;
   return app;
 }
 function monthlyObligation(product, amount, apr, term){
-  return product === "card" ? Math.round(amount*0.03) : Math.round(pmtOf(amount, apr, term));
+  return REVOLVING[product] ? Math.round(amount*0.03) : Math.round(pmtOf(amount, apr, term));
 }
-function effectiveDepAPY(kind){ return S.rates.dep[kind] + S.policy.apyEmergency; }
+function effectiveDepAPY(kind, term){
+  if(kind === "collateral") return 0;    // locked, non-interest-bearing card collateral
+  if(kind === "cd" && term) return cdTermAPY(term) + S.policy.apyEmergency;
+  return S.rates.dep[kind] + S.policy.apyEmergency;
+}
+function cdTermAPY(term){
+  const mult = CFG.CD_TERM_MULT[term] || 0.80;
+  return round2(S.rates.dep.cd * mult / CFG.CD_TERM_MULT[12]);
+}
 
 /* ------------------------------ capacity ------------------------------ */
 // `floors` = true means test only the hard regulatory minimums (a deliberate
 // player override); the default tests the bank's own, tighter internal limits.
 function limits(floors){
+  // CRA-style relief (Community Development charter): the regulatory capital
+  // floor itself sits lower, in exchange for serving a riskier pool by design
+  const relief = charterCfg().craRelief || 0;
+  const rc = (S.events.regchange && S.day < S.events.regchange.until) ? S.events.regchange : null;
+  const regDelta = rc ? rc.capitalDelta : 0, resDelta = rc ? rc.reserveDelta : 0;
+  const reqCapital = Math.max(0.02, CFG.REQ_CAPITAL - relief + regDelta);
+  const reqReserve = Math.max(0.02, CFG.REQ_RESERVE + resDelta);
   return floors
-    ? { rr:CFG.REQ_RESERVE, car:CFG.REQ_CAPITAL, t1:CFG.REQ_TIER1 }
-    : { rr:Math.max(CFG.REQ_RESERVE, S.policy.targetReserve),
-        car:Math.max(CFG.REQ_CAPITAL, S.policy.targetCapital), t1:CFG.REQ_TIER1 };
+    ? { rr:reqReserve, car:reqCapital, t1:CFG.REQ_TIER1 }
+    : { rr:Math.max(reqReserve, S.policy.targetReserve),
+        car:Math.max(reqCapital, S.policy.targetCapital), t1:CFG.REQ_TIER1 };
 }
-function capacityCheck(product, amount, floors){
+// effective risk weight after any government-guarantee relief (small-business only)
+function rwOf(product, guaranteedPct){
+  if(product !== "sbloan" || !guaranteedPct) return CFG.RW[product];
+  const g = clamp(guaranteedPct, 0, CFG.SB_GUARANTEE_MAX);
+  return CFG.RW.sbloan*(1-g) + CFG.SB_GUARANTEE_RW*g;
+}
+function capacityCheck(product, amount, floors, guaranteedPct){
   if(S.reg.bailoutActive)
     return { ok:false, why:"new lending is frozen under the terms of the government injection" };
   const m = M(), L = limits(floors);
-  const isCard = product === "card";
-  const draw  = isCard ? amount*CFG.CARD_CASH_DRAW : amount;
-  const rwAdd = isCard ? amount*CFG.CCF_CARD*CFG.RW.card : amount*CFG.RW[product];
+  const isRevolving = !!REVOLVING[product];
+  // secured-card principal is funded by the customer's own cash collateral, not the bank's — no draw on cash
+  const draw  = product === "securedcard" ? 0 : isRevolving ? amount*CFG.CARD_CASH_DRAW : amount;
+  const rwAdd = isRevolving ? amount*CFG.CCF_CARD*CFG.RW[product] : amount*rwOf(product, guaranteedPct);
   const newCash = m.cash - draw;
   if(newCash < 0) return { ok:false, why:"not enough cash on hand" };
   const rr = m.funding > 0 ? newCash/m.funding : Infinity;
@@ -1195,15 +1372,74 @@ function capacityCheck(product, amount, floors){
 // Largest principal that still clears both ratios — used to explain a decline.
 function headroom(product, floors){
   const m = M(), L = limits(floors);
-  const isCard = product === "card";
-  const cashCap = (m.cash - L.rr*m.funding) / (isCard ? CFG.CARD_CASH_DRAW : 1);
-  const rwPer = isCard ? CFG.CCF_CARD*CFG.RW.card : CFG.RW[product];
+  const isRevolving = !!REVOLVING[product];
+  const cashCap = product === "securedcard" ? Infinity : (m.cash - L.rr*m.funding) / (isRevolving ? CFG.CARD_CASH_DRAW : 1);
+  const rwPer = isRevolving ? CFG.CCF_CARD*CFG.RW[product] : CFG.RW[product];
   const carCap = rwPer > 0 ? (m.capital/L.car - m.rwa)/rwPer : Infinity;
   const t1Cap  = rwPer > 0 ? (m.tier1/L.t1 - m.rwa)/rwPer : Infinity;
   return Math.max(0, Math.min(cashCap, carCap, t1Cap));
 }
 
 /* ---------------------------- underwriting ---------------------------- */
+function declineResult(reason, capacity){ return capacity ? { path:"decline", reason, capacity:true } : { path:"decline", reason }; }
+
+// HELOC: revolving and secured, but still a score/DTI decision — its own
+// (usually stricter) bands rather than the generic consumer policy
+function underwriteHeloc(app){
+  if(S.reg.restricted) return declineResult("Regulator has restricted new credit extension.");
+  if(!S.policy.products.heloc) return declineResult("Product not offered under current policy.");
+  const hp = S.policy.heloc;
+  if(app.score < hp.minScore) return declineResult(`Score ${app.score} is below the HELOC policy minimum of ${hp.minScore}.`);
+  if(app.dti > hp.maxDTI) return declineResult(`DTI of ${pct(app.dti)} exceeds the HELOC policy maximum of ${pct(hp.maxDTI)}.`);
+  const cap = capacityCheck(app.product, app.amount);
+  if(!cap.ok) return declineResult(`Insufficient lending capacity — ${cap.why}.`, true);
+  if(app.score >= S.policy.autoApprove) return { path:"approve" };
+  if(app.score < S.policy.autoDecline) return declineResult(`Score ${app.score} sits below the auto-decline threshold of ${S.policy.autoDecline}.`);
+  return { path:"review", reason:"Score falls inside the manual review band." };
+}
+// Student loans: a short credit history is not treated as a bad one — a thin
+// file with a workable score still clears, instead of an automatic decline.
+function underwriteStudentLoan(app){
+  if(S.reg.restricted) return declineResult("Regulator has restricted new credit extension.");
+  if(!S.policy.products.studentloan) return declineResult("Product not offered under current policy.");
+  const sp = S.policy.studentloan;
+  if(app.dti > sp.maxDTI) return declineResult(`DTI of ${pct(app.dti)} exceeds the policy maximum of ${pct(sp.maxDTI)}.`);
+  const thin = app.historyMonths < sp.minHistoryMonths;
+  if(thin && app.score < sp.thinFileMinScore)
+    return declineResult(`Only ${app.historyMonths} months of credit history and a score of ${app.score} — below the ${sp.thinFileMinScore} floor set for thin-file applicants.`);
+  const cap = capacityCheck(app.product, app.amount);
+  if(!cap.ok) return declineResult(`Insufficient lending capacity — ${cap.why}.`, true);
+  if(!thin && app.score >= S.policy.autoApprove) return { path:"approve" };
+  if(thin && app.score >= sp.thinFileMinScore + 40) return { path:"approve" };
+  if(!thin && app.score < S.policy.autoDecline)
+    return declineResult(`Score ${app.score} sits below the auto-decline threshold of ${S.policy.autoDecline}.`);
+  return { path:"review", reason: thin ? "Thin credit file — manual review." : "Score falls inside the manual review band." };
+}
+// Small-business loans: underwritten against the business, not the owner's
+// score — debt-service coverage is the primary signal.
+function underwriteSbLoan(app){
+  if(S.reg.restricted) return declineResult("Regulator has restricted new credit extension.");
+  if(!S.policy.products.sbloan) return declineResult("Product not offered under current policy.");
+  const sp = S.policy.sbloan;
+  if(app.bizDSCR < sp.minDSCR*0.7)
+    return declineResult(`Debt-service coverage of ${app.bizDSCR.toFixed(2)}x is well under the ${sp.minDSCR.toFixed(2)}x policy minimum.`);
+  const cap = capacityCheck(app.product, app.amount, false, sp.guaranteedPct);
+  if(!cap.ok) return declineResult(`Insufficient lending capacity — ${cap.why}.`, true);
+  if(app.bizDSCR >= sp.minDSCR) return { path:"approve" };
+  return { path:"review", reason:`Debt-service coverage of ${app.bizDSCR.toFixed(2)}x sits under the ${sp.minDSCR.toFixed(2)}x target — manual review.` };
+}
+// Secured cards: cash collateral equal to the limit makes the card effectively
+// risk-free to the bank, so the gate is affordability of the collateral, not score.
+function underwriteSecuredCard(app){
+  if(S.reg.restricted) return declineResult("Regulator has restricted new credit extension.");
+  if(!S.policy.products.securedcard) return declineResult("Product not offered under current policy.");
+  if(app.amount < S.policy.securedcard.minCollateral)
+    return declineResult(`Requested collateral of ${fmtMoney(app.amount)} is below the ${fmtMoney(S.policy.securedcard.minCollateral)} minimum.`);
+  const cap = capacityCheck(app.product, app.amount);
+  if(!cap.ok) return declineResult(`Insufficient lending capacity — ${cap.why}.`, true);
+  return { path:"approve" };
+}
+
 function underwrite(app){
   const p = S.policy;
   if(app.product === "deposit"){
@@ -1213,17 +1449,21 @@ function underwrite(app){
       return { path:"review", reason:`Deposit of ${fmtMoney(app.amount)} exceeds the ${fmtMoney(CFG.KYC_THRESHOLD)} source-of-funds threshold — compliance review.` };
     return { path:"approve" };
   }
-  if(S.reg.restricted) return { path:"decline", reason:"Regulator has restricted new credit extension." };
-  if(!p.products[app.product]) return { path:"decline", reason:"Product not offered under current policy." };
+  if(app.product === "heloc") return underwriteHeloc(app);
+  if(app.product === "studentloan") return underwriteStudentLoan(app);
+  if(app.product === "sbloan") return underwriteSbLoan(app);
+  if(app.product === "securedcard") return underwriteSecuredCard(app);
+  if(S.reg.restricted) return declineResult("Regulator has restricted new credit extension.");
+  if(!p.products[app.product]) return declineResult("Product not offered under current policy.");
   if(app.score < p.minScore)
-    return { path:"decline", reason:`Score ${app.score} is below the policy minimum of ${p.minScore}.` };
+    return declineResult(`Score ${app.score} is below the policy minimum of ${p.minScore}.`);
   if(app.dti > p.maxDTI)
-    return { path:"decline", reason:`DTI of ${pct(app.dti)} exceeds the policy maximum of ${pct(p.maxDTI)}.` };
+    return declineResult(`DTI of ${pct(app.dti)} exceeds the policy maximum of ${pct(p.maxDTI)}.`);
   const cap = capacityCheck(app.product, app.amount);
-  if(!cap.ok) return { path:"decline", reason:`Insufficient lending capacity — ${cap.why}.`, capacity:true };
+  if(!cap.ok) return declineResult(`Insufficient lending capacity — ${cap.why}.`, true);
   if(app.score >= p.autoApprove) return { path:"approve" };
   if(app.score < p.autoDecline)
-    return { path:"decline", reason:`Score ${app.score} sits below the auto-decline threshold of ${p.autoDecline}.` };
+    return declineResult(`Score ${app.score} sits below the auto-decline threshold of ${p.autoDecline}.`);
   return { path:"review", reason:"Score falls inside the manual review band." };
 }
 
@@ -1238,27 +1478,29 @@ function takeupProb(app, offer){
   p *= clamp(0.7 + S.rep/160, 0.7, 1.12);
   return clamp(p, 0.02, 0.97);
 }
-function depositAppeal(kind){
-  const delta = effectiveDepAPY(kind) - marketDepAPY(kind);
+function depositAppeal(kind, term){
+  const delta = effectiveDepAPY(kind, term) - marketDepAPY(kind);
   const repAdj = (S.rep - 50)/120;
   return clamp(1/(1 + Math.exp(-((delta + 0.30 + repAdj)/0.75))), 0.03, 0.98);
 }
 
 /* ------------------------------- booking ------------------------------ */
 function bookDeposit(app){
-  const appeal = depositAppeal(app.kind);
+  const appeal = depositAppeal(app.kind, app.term);
   if(rnd() > appeal){
-    logDecision(`${app.name} opened elsewhere — ${rate(effectiveDepAPY(app.kind))} APY was not competitive.`, "warn");
+    logDecision(`${app.name} opened elsewhere — ${rate(effectiveDepAPY(app.kind, app.term))} APY was not competitive.`, "warn");
     S.stats.offersDeclined++;
     return false;
   }
   // depositors bring more money when the rate is good
   const amt = Math.round(app.amount * clamp(0.55 + 0.9*appeal, 0.5, 1.5));
-  const a = makeDepositAccount(app.name, app.kind, amt, false);
+  const a = makeDepositAccount(app.name, app.kind, amt, false, app.term);
   S.depAccts.push(a);
   post({ cash: amt, deposits: amt }, "deposit-open");
   S.stats.customersServed++;
   DIRTY.portfolio = true;
+  // a wealth-unlocked relationship also refers in outside assets to manage
+  if(charterCfg().wealthUnlocked) S.wealth.aum += amt * CFG.WEALTH_REFERRAL_MULT;
   return true;
 }
 
@@ -1268,21 +1510,39 @@ function bookCredit(app, offer){
     id: S.nextId++, name: app.name, product, tier: app.tier, score: app.score,
     opened: S.day, apr: offer.apr, income: app.income, dti: app.dti,
     status: "current", missed: 0, lifeInterest: 0, lifeFees: 0,
-    secured: !!SECURED[product], lastPay: S.day,
+    secured: !!SECURED[product], lastPay: S.day, region: app.region,
   };
-  if(product === "card"){
+  if(product === "card" || product === "securedcard"){
     a.limit = offer.amount; a.balance = 0; a.term = 0;
     a.revolver = rnd() < clamp(0.82 - (app.score-560)/460, 0.12, 0.85);
     a.spendRate = clamp(0.06 + 0.28*rnd(), 0.03, 0.42);
+    if(product === "securedcard"){
+      // cash collateral equal to the limit becomes a deposit liability — the
+      // card is effectively risk-free to the bank as long as it stays open
+      const dep = makeDepositAccount(app.name, "collateral", offer.amount, false);
+      S.depAccts.push(dep);
+      post({ cash: offer.amount, deposits: offer.amount }, "securedcard-collateral");
+      a.collateralId = dep.id;
+    }
     if(S.fees.cardAnnual > 0){
       income("feeAnnual", S.fees.cardAnnual,
              { grossLoans: S.fees.cardAnnual, retained: S.fees.cardAnnual }, "card-annual-fee");
       a.balance += S.fees.cardAnnual; a.lifeFees += S.fees.cardAnnual;
     }
+  } else if(product === "heloc"){
+    // revolving and immediately drawn, but priced off the index rather than
+    // locked at origination — the margin is fixed, the rate itself floats
+    a.limit = offer.amount; a.balance = offer.amount; a.term = 0;
+    a.revolver = true;
+    a.helocMargin = offer.apr - S.macro.rate;
+    post({ cash: -offer.amount, grossLoans: offer.amount }, "originate");
+    const fee = Math.round(offer.amount * S.fees.origPct/100);
+    if(fee > 0){ income("feeOrig", fee, { cash: fee, retained: fee }, "origination-fee"); a.lifeFees += fee; }
   } else {
     a.principal = offer.amount; a.balance = offer.amount;
     a.term = offer.term; a.remaining = offer.term;
     a.payment = pmtOf(offer.amount, offer.apr, offer.term);
+    if(product === "sbloan") a.guaranteedPct = clamp(S.policy.sbloan.guaranteedPct||0, 0, CFG.SB_GUARANTEE_MAX);
     post({ cash: -offer.amount, grossLoans: offer.amount }, "originate");
     const fee = Math.round(offer.amount * S.fees.origPct/100);
     if(fee > 0){
@@ -1290,10 +1550,24 @@ function bookCredit(app, offer){
       a.lifeFees += fee;
     }
   }
+  // background fraud: built to pass score/DTI, so underwriting can't catch it —
+  // it surfaces later as an unrecoverable early default, not a normal default curve
+  if(rnd() < fraudRate()){
+    a.fraud = true;
+    a.fraudReveal = S.day + rint(CFG.FRAUD_REVEAL_MIN_DAYS, CFG.FRAUD_REVEAL_MAX_DAYS);
+  }
   S.loans.push(a);
   S.stats.customersServed++;
   DIRTY.portfolio = true;
   return a;
+}
+function fraudRate(){
+  const spend = Math.max(0, S.policy.fcSpend||0);
+  return CFG.FRAUD_MIN_RATE + (CFG.FRAUD_BASE_RATE-CFG.FRAUD_MIN_RATE)*CFG.FRAUD_SPEND_HALF/(CFG.FRAUD_SPEND_HALF+spend);
+}
+function complianceViolationChance(){
+  const spend = Math.max(0, S.policy.fcSpend||0);
+  return CFG.COMPLIANCE_VIOLATION_BASE*CFG.FRAUD_SPEND_HALF/(CFG.FRAUD_SPEND_HALF+spend*1.5);
 }
 
 function decide(app, action, offer){
@@ -1373,18 +1647,66 @@ function closeAccount(a, why){
   a.status = "closed"; a.closedDay = S.day; a.closeWhy = why || "paid off";
   DIRTY.portfolio = true;
 }
+function lgdOf(a){
+  let lgd = CFG.LGD[a.product];
+  const h = S.events.housing;
+  if(h && S.day < h.until && (a.product === "mortgage" || a.product === "heloc")) lgd *= CFG.EVT_HOUSING_LGD_MULT;
+  // an SBA-style guarantee covers its share of the actual loss, not just the capital charge
+  if(a.product === "sbloan" && a.guaranteedPct) lgd *= (1-a.guaranteedPct);
+  return clamp(lgd, 0, 1);
+}
 function chargeOff(a){
   const bal = a.balance;
-  const loss = bal * CFG.LGD[a.product];
-  const recovery = bal - loss;
-  const drawn = Math.min(S.gl.allowance, loss);
-  const excess = loss - drawn;
-  post({ grossLoans:-bal, cash:recovery, allowance:-drawn, retained:-excess }, "charge-off");
-  if(excess > 0) acc("provision", excess);   // loss beyond the allowance hits the P&L directly
+  // secured card: the customer's own collateral is seized first — only a
+  // balance that has crept past the collateral (fees, accrued interest) is
+  // a real loss to the bank
+  if(a.product === "securedcard" && a.collateralId){
+    const dep = S.depAccts.find(d => d.id === a.collateralId && d.status === "open");
+    const seized = dep ? Math.min(dep.balance, bal) : 0;
+    const loss = Math.max(0, bal - seized);
+    const drawn = Math.min(S.gl.allowance, loss);
+    const excess = loss - drawn;
+    post({ grossLoans:-bal, deposits:-seized, allowance:-drawn, retained:-excess }, "charge-off-secured");
+    if(excess > 0) acc("provision", excess);
+    if(dep){
+      dep.balance -= seized;
+      if(dep.balance <= 0.01){ dep.balance = 0; dep.status = "closed"; dep.closedDay = S.day;
+        dep.closeWhy = "collateral seized to cover default"; }
+    }
+  } else {
+    const loss = bal * lgdOf(a);
+    const recovery = bal - loss;
+    const drawn = Math.min(S.gl.allowance, loss);
+    const excess = loss - drawn;
+    post({ grossLoans:-bal, cash:recovery, allowance:-drawn, retained:-excess }, "charge-off");
+    if(excess > 0) acc("provision", excess);   // loss beyond the allowance hits the P&L directly
+  }
   a.status = "chargedoff"; a.closedDay = S.day; a.balance = 0;
   S.stats.chargeOffs++; S.stats.chargeOffAmt += bal;
   S.monthChargeOffs = (S.monthChargeOffs||0) + bal;
   DIRTY.portfolio = true;
+}
+// fraud losses bypass the normal allowance model entirely: they were never
+// anticipated by the credit-risk provisioning, so the full balance hits
+// its own income-statement line rather than drawing down the allowance
+function fraudChargeOff(a){
+  const bal = a.balance;
+  post({ grossLoans:-bal, retained:-bal }, "fraud-loss");
+  acc("fraudLoss", bal);
+  a.status = "chargedoff"; a.closedDay = S.day; a.balance = 0; a.closeWhy = "fraudulent identity — full loss";
+  S.stats.fraudLossAmt += bal; S.stats.fraudLossCount++;
+  S.monthChargeOffs = (S.monthChargeOffs||0) + bal;
+  DIRTY.portfolio = true;
+}
+function graduateSecuredCard(a){
+  const dep = S.depAccts.find(d => d.id === a.collateralId && d.status === "open");
+  if(dep){
+    if(!withdraw(dep.balance, "securedcard-collateral-release")) return;   // cash-constrained — try again next month
+    dep.balance = 0; dep.status = "closed"; dep.closedDay = S.day;
+    dep.closeWhy = "collateral released — card graduated to unsecured";
+  }
+  a.product = "card"; a.secured = false; a.graduated = true;
+  logEvent(`${a.name}'s secured card graduated to unsecured after building a ${a.score} credit score.`, "ok");
 }
 function prepayProb(a){
   const gap = a.apr - marketAPR(a.product, a.tier);
@@ -1393,11 +1715,34 @@ function prepayProb(a){
 
 function processCredit(a){
   if(isDead(a)) return;
-  const isCard = a.product === "card";
+  // background fraud: built to pass ordinary underwriting, so it surfaces on
+  // its own delayed timer as a full, unrecoverable loss rather than a missed
+  // payment — the account can look perfectly seasoned right up to that day
+  if(a.fraud && S.day >= a.fraudReveal){ fraudChargeOff(a); return; }
+
+  const isCardLike = a.product === "card" || a.product === "securedcard";
+  const isRevolving = !!REVOLVING[a.product];
+
+  // HELOC: the margin is fixed at origination, the index (the market rate)
+  // is not — this is the second place, besides the mortgage book funded by
+  // fixed-rate CDs, where the rate mismatch actually bites the bank
+  if(a.product === "heloc") a.apr = clamp(S.macro.rate + a.helocMargin, 0.5, 45);
   const mrate = a.apr/1200;
 
-  // --- card: annual fee on the anniversary -----------------------------
-  if(isCard && S.fees.cardAnnual > 0){
+  // secured card: builds credit the way it's supposed to, and can graduate out
+  if(a.product === "securedcard" && a.status === "current"){
+    a.score = clamp(a.score + rrange(0, 3), 300, 850);
+    if(a.score >= CFG.SECURED_CARD_GRADUATE_SCORE) graduateSecuredCard(a);
+  }
+  // deferment ends before this month's accrual/payment logic runs, so a loan
+  // that comes off deferment resumes collection in the same month
+  if(a.product === "studentloan" && a.deferred && S.day >= a.deferUntil){
+    a.deferred = false;
+    a.payment = pmtOf(a.balance, a.apr, a.remaining);   // re-amortize the grown balance
+  }
+
+  // --- card-like: annual fee on the anniversary --------------------------
+  if(isCardLike && S.fees.cardAnnual > 0){
     a.nextAnnual = a.nextAnnual || (a.opened + 360);
     if(S.day >= a.nextAnnual){
       const f = S.fees.cardAnnual;
@@ -1405,10 +1750,12 @@ function processCredit(a){
       a.balance += f; a.lifeFees += f; a.nextAnnual += 360;
     }
   }
-  // --- card: spending on the line --------------------------------------
-  if(isCard && a.missed === 0){
+  // --- card-like: spending on the line, with a holiday-season seasonal lift ---
+  if(isCardLike && a.missed === 0){
     const room = Math.max(0, a.limit - a.balance);
-    let spend = Math.min(room, a.limit * a.spendRate * (0.6 + 0.8*rnd()));
+    const dm = dateParts(S.day).m;   // 0-indexed month; 10-11 = Nov/Dec
+    const seasonal = (dm === 10 || dm === 11) ? 1.35 : dm === 0 ? 0.85 : 1;
+    let spend = Math.min(room, a.limit * a.spendRate * seasonal * (0.6 + 0.8*rnd()));
     if(S.macro.econ === "recession") spend *= 0.85;
     else if(S.macro.econ === "boom") spend *= 1.1;
     // the bank has to fund the draw: it cannot spend itself through the reserve floor
@@ -1422,26 +1769,29 @@ function processCredit(a){
   }
   // --- interest accrual (non-accrual once 90+ days past due) ------------
   let interest = 0;
-  const accrues = a.missed < 3 && (!isCard || a.revolver || a.balance > 0 && a.missed > 0);
+  const accrues = a.missed < 3 && (!isRevolving || a.revolver || a.balance > 0 && a.missed > 0);
   if(accrues && a.balance > 0){
     interest = a.balance*mrate;
     income("intLoans", interest, { grossLoans:interest, retained:interest }, "interest-accrual");
     a.balance += interest; a.lifeInterest += interest; S.stats.lifetimeInterest += interest;
+    // deferment: payments pause, but interest keeps accruing and capitalizing —
+    // the loan quietly grows before it is ever actually delinquent
+    if(a.product === "studentloan" && a.deferred) return;
   }
-  if(isCard && a.balance <= 0 && a.missed === 0) return;   // idle card, nothing to collect
+  if(isCardLike && a.balance <= 0 && a.missed === 0) return;   // idle card, nothing to collect
 
   // --- payment behaviour -------------------------------------------------
   const cure = a.secured ? CFG.CURE.secured : CFG.CURE.unsecured;
   const pdA = pdAnnual(a);
   const distressA = clamp(pdA/Math.pow(1-cure, CFG.CHARGEOFF_AT-1), 0, 0.95);
   const distressM = 1 - Math.pow(1-distressA, 1/12);
-  const scheduled = isCard ? cardMinPayment(a, interest) : a.payment;
+  const scheduled = isRevolving ? cardMinPayment(a, interest) : a.payment;
 
   if(a.missed > 0){
     if(rnd() < cure){
       applyPayment(a, Math.min(a.balance, scheduled*(a.missed+1)));
       a.missed = 0; a.status = "current"; a.lastPay = S.day;
-      if(!isCard){ a.remaining--; if(a.balance <= 1 || a.remaining <= 0) closeAccount(a); }
+      if(!isRevolving){ a.remaining--; if(a.balance <= 1 || a.remaining <= 0) closeAccount(a); }
     } else {
       a.missed++;
       chargeLateFee(a);
@@ -1450,17 +1800,25 @@ function processCredit(a){
     }
     return;
   }
+  // a student loan in trouble can request deferment instead of missing a
+  // payment — a real product feature, and a real way for a loss to hide
+  if(a.product === "studentloan" && !a.deferUsed && !a.deferred && rnd() < distressM){
+    a.deferred = true; a.deferUsed = true;
+    a.deferUntil = S.day + CFG.STUDENT_DEFER_MONTHS*CFG.DAYS_PER_MONTH;
+    logDecision(`${a.name} requested deferment on their student loan — payments pause, interest keeps accruing.`, "info");
+    return;
+  }
   if(rnd() < distressM){
     a.missed = 1; a.status = "d30"; chargeLateFee(a);
     return;
   }
   // performing
   let pay;
-  if(isCard) pay = a.revolver ? Math.min(a.balance, scheduled*(1 + 1.6*rnd())) : a.balance;
-  else       pay = Math.min(a.balance, scheduled);
+  if(isRevolving) pay = a.revolver ? Math.min(a.balance, scheduled*(1 + 1.6*rnd())) : a.balance;
+  else            pay = Math.min(a.balance, scheduled);
   applyPayment(a, pay);
   a.lastPay = S.day;
-  if(!isCard){
+  if(!isRevolving){
     a.remaining--;
     if(a.balance <= 1 || a.remaining <= 0){ closeAccount(a); return; }
     if(rnd() < prepayProb(a)){ closeAccount(a, "paid off early"); return; }
@@ -1468,8 +1826,22 @@ function processCredit(a){
 }
 
 /* ======================== deposit account behaviour ===================== */
+function breakCDEarly(d){
+  const bal = d.balance;
+  const penalty = Math.min(bal, bal*(d.apy/1200)*CFG.CD_EARLY_PENALTY_MONTHS);
+  const payout = bal - penalty;
+  if(!ensureCash(payout)) return liquidityFailure(payout);
+  income("feeService", penalty, { cash:-payout, deposits:-bal, retained:penalty }, "cd-early-withdrawal");
+  d.balance = 0; d.status = "closed"; d.closedDay = S.day;
+  d.closeWhy = "broke the CD early — forfeited interest";
+  DIRTY.portfolio = true;
+  return true;
+}
 function processDepositAccount(d){
   if(d.status !== "open") return true;
+  // locked, non-interest-bearing secured-card collateral — sits until the
+  // card closes or graduates, immune to drift, fees and attrition alike
+  if(d.kind === "collateral") return true;
   const apy = d.kind === "cd" ? d.apy : effectiveDepAPY(d.kind);
   const interest = d.balance*apy/1200;
   if(interest > 0){
@@ -1481,10 +1853,13 @@ function processDepositAccount(d){
     income("feeService", f, { deposits:-f, retained:f }, "service-fee");
     d.balance -= f;
   }
-  // CD maturity: roll at the current rate, or walk
+  // a small, rare chance a CD holder needs the cash before maturity —
+  // longer terms can't be pulled by a run, but a customer can still break one
+  if(d.kind === "cd" && S.day < d.maturity && rnd() < 0.0012) return breakCDEarly(d);
+  // CD maturity: roll at the same term and the current term-adjusted rate, or walk
   if(d.kind === "cd" && S.day >= d.maturity){
-    if(rnd() < depositAppeal("cd")){
-      d.apy = S.rates.dep.cd; d.maturity = S.day + CFG.CD_TERM*CFG.DAYS_PER_MONTH;
+    if(rnd() < depositAppeal("cd", d.term)){
+      d.apy = cdTermAPY(d.term); d.maturity = S.day + d.term*CFG.DAYS_PER_MONTH;
     } else {
       return closeDepositAccount(d, "CD matured and was not renewed");
     }
@@ -1492,7 +1867,10 @@ function processDepositAccount(d){
   // organic balance drift
   const gap = (d.kind === "cd" ? d.apy : effectiveDepAPY(d.kind)) - marketDepAPY(d.kind);
   const econAdj = S.macro.econ === "boom" ? 0.004 : S.macro.econ === "recession" ? -0.004 : 0;
-  let g = d.drift + econAdj + clamp(gap*d.beta*0.012, -0.02, 0.03) + 0.006*randn();
+  const comp = S.events.competitor;
+  const compAdj = (comp && S.day < comp.until) ? (CFG.EVT_COMPETITOR_DEP_MULT - 1)*0.03 : 0;
+  let g = d.drift + econAdj + compAdj + clamp(gap*d.beta*0.012, -0.02, 0.03) + 0.006*randn();
+  g *= charterCfg().depositChurnMult || 1;
   g = clamp(g, -0.09, 0.10);
   const delta = Math.round(d.balance*g);
   if(delta > 0){ d.balance += delta; post({ cash:delta, deposits:delta }, "deposit-inflow"); }
@@ -1504,7 +1882,7 @@ function processDepositAccount(d){
   // attrition
   if(d.kind !== "cd"){
     const under = Math.max(0, marketDepAPY(d.kind) - effectiveDepAPY(d.kind));
-    const p = 0.010 + under*0.045*d.beta + Math.max(0, 45 - S.rep)*0.0016;
+    const p = (0.010 + under*0.045*d.beta + Math.max(0, 45 - S.rep)*0.0016) * (charterCfg().depositChurnMult || 1);
     if(rnd() < p) return closeDepositAccount(d, "moved to a competitor");
   }
   if(d.balance < 25) return closeDepositAccount(d, "balance exhausted");
@@ -2299,7 +2677,62 @@ function reputationTarget(){
   if(S.stats.everBailedOut) t -= CFG.BAILOUT_REP_PENALTY;
   const shut = ["checking","savings","cd"].filter(k => !S.policy.depositProducts[k]).length;
   t -= shut*2.5;
+  const swing = charterCfg().repSwingMult || 1;
+  t = 50 + (t-50)*swing;
   return clamp(t, 0, 100);
+}
+
+/* ===================== narrative macro events ===================== */
+// Turns the macro-cycle drift into discrete, legible moments with a real,
+// traceable mechanical effect — read elsewhere by pdAnnual, lgdOf, productMix,
+// arrivalRate and limits() rather than being flavor text bolted on the side.
+function rollMacroEvents(){
+  const e = S.events;
+  if(e.layoff && S.day >= e.layoff.until) e.layoff = null;
+  if(e.housing && S.day >= e.housing.until) e.housing = null;
+  if(e.competitor && S.day >= e.competitor.until) e.competitor = null;
+  if(e.regchange && S.day >= e.regchange.until) e.regchange = null;
+
+  if(!e.layoff && rnd() < CFG.EVT_LAYOFF_CHANCE){
+    const region = pick(REGIONS);
+    e.layoff = { region, until: S.day + CFG.EVT_LAYOFF_MONTHS*CFG.DAYS_PER_MONTH };
+    const exposure = S.loans.filter(a => !isDead(a) && a.region === region).reduce((s,a)=>s+a.balance, 0);
+    logEvent(`Local employer layoff hits ${region} — delinquency there will run at ${CFG.EVT_LAYOFF_PD_MULT}× for months. Your exposure there: ${fmtCompact(exposure)}.`, "bad");
+  }
+  if(!e.housing && rnd() < CFG.EVT_HOUSING_CHANCE){
+    e.housing = { until: S.day + CFG.EVT_HOUSING_MONTHS*CFG.DAYS_PER_MONTH };
+    logEvent(`Housing market correction: falling collateral values raise loss severity on mortgages and HELOCs, and new mortgage demand cools for a while.`, "bad");
+  }
+  if(!e.competitor && rnd() < CFG.EVT_COMPETITOR_CHANCE){
+    e.competitor = { until: S.day + CFG.EVT_COMPETITOR_MONTHS*CFG.DAYS_PER_MONTH };
+    logEvent(`A rival institution stumbles — customers are shopping around. Expect a temporary lift in applicants and deposit inflow, independent of your own reputation.`, "ok");
+  }
+  if(rnd() < CFG.EVT_RATESHOCK_CHANCE){
+    const move = rrange(CFG.EVT_RATESHOCK_MIN, CFG.EVT_RATESHOCK_MAX) * (rnd()<0.5?-1:1);
+    S.macro.rate = clamp(S.macro.rate + move, 1.0, 9.0);
+    logEvent(`Federal Reserve ${move>0?"raises":"cuts"} rates ${Math.round(Math.abs(move)*100)}bps. HELOC balances reprice with it immediately.`, "info");
+  }
+  if(!e.regchange && rnd() < CFG.EVT_REGCHANGE_CHANCE){
+    const capD = rrange(0.002, CFG.EVT_REGCHANGE_MAX) * (rnd()<0.5?-1:1);
+    e.regchange = { until: S.day + CFG.EVT_REGCHANGE_MONTHS*CFG.DAYS_PER_MONTH, capitalDelta:capD, reserveDelta:0 };
+    logEvent(`Regulatory policy change: the industry-wide capital minimum has ${capD>0?"risen":"eased"} by ${Math.abs(Math.round(capD*1000)/10)}pt for a while.`, capD>0?"warn":"info");
+  }
+}
+function checkMilestones(){
+  const ms = charterCfg().milestones;
+  if(!ms) return;
+  const idx = S.charterState.milestoneIdx;
+  if(idx >= ms.length) return;
+  const target = ms[idx];
+  if(S.day < target.day) return;
+  const assets = M().assets;
+  if(assets >= target.minAssets){
+    S.charterState.milestoneIdx++;
+    logEvent(`Investor milestone cleared: ${fmtCompact(assets)} in assets by day ${target.day}.`, "ok");
+  } else {
+    gameOver("Investors pulled funding",
+      `By day ${target.day} the venture backers required ${fmtMoney(target.minAssets)} in assets; the bank had only ${fmtMoney(assets)}. They exercised their right to pull funding and force a wind-down.`);
+  }
 }
 
 function monthClose(){
@@ -2401,6 +2834,65 @@ function monthClose(){
     if(!ensureCash(mk)) return liquidityFailure(mk);
     income("marketing", mk, { cash:-mk, retained:-mk }, "marketing");
   }
+  if(S.policy.regionBudget > 0){
+    const rb = S.policy.regionBudget;
+    if(!ensureCash(rb)) return liquidityFailure(rb);
+    income("marketing", rb, { cash:-rb, retained:-rb }, "region-marketing");
+  }
+  // fraud & compliance investment — a real risk-tolerance choice, not a tax:
+  // zero spend is a valid playstyle that just eats unpredictable fraud and audit risk
+  if(S.policy.fcSpend > 0){
+    const fc = S.policy.fcSpend;
+    if(!ensureCash(fc)) return liquidityFailure(fc);
+    income("compliance", fc, { cash:-fc, retained:-fc }, "fraud-compliance-spend");
+  }
+  if(rnd() < CFG.COMPLIANCE_AUDIT_CHANCE * (charterCfg().auditMult||1)){
+    S.stats.complianceAudits++;
+    if(rnd() < complianceViolationChance()){
+      const fine = Math.max(CFG.COMPLIANCE_FINE_MIN, M().assets*CFG.COMPLIANCE_FINE_ASSET_BPS*(0.6+0.8*rnd()));
+      if(ensureCash(fine)) income("compliance", fine, { cash:-fine, retained:-fine }, "compliance-fine");
+      S.stats.complianceFines += fine;
+      S.rep = clamp(S.rep - CFG.COMPLIANCE_REP_HIT, 0, 100);
+      logEvent(`Regulator audit found a compliance violation — fined ${fmtMoney(fine,0)}. Thin fraud & compliance spend leaves this to chance.`, "bad");
+    } else {
+      const minor = CFG.COMPLIANCE_MINOR_COST;
+      if(S.policy.fcSpend > 0){
+        income("compliance", minor, { cash:-minor, retained:-minor }, "compliance-minor-finding");
+        logEvent(`Regulator audit came back with a minor, cheap-to-fix finding — ${fmtMoney(minor,0)}.`, "info");
+      } else {
+        logEvent(`Regulator audit came back clean.`, "ok");
+      }
+    }
+  }
+  // fraud ring: a rare, delayed reveal — a batch of seasoned, previously-clean
+  // accounts turn out to have been fraudulent all along
+  if(rnd() < CFG.FRAUD_RING_CHANCE){
+    const pool = S.loans.filter(a => !isDead(a) && !a.fraud && (S.day-a.opened) > 360);
+    if(pool.length >= 3){
+      const n = Math.min(pool.length, rint(3, 12));
+      let ringLoss = 0;
+      for(let i=0;i<n;i++){
+        const idx = Math.floor(rnd()*pool.length);
+        const a = pool.splice(idx, 1)[0];
+        ringLoss += a.balance;
+        fraudChargeOff(a);
+      }
+      S.rep = clamp(S.rep - 10, 0, 100);
+      logEvent(`Fraud ring uncovered: ${n} previously "clean" accounts turn out to have been part of an organised ring — ${fmtMoney(ringLoss,0)} written off despite a clean payment history.`, "bad");
+    }
+  }
+  // wealth management: advisory fees on assets under management, unlocked by charter
+  if(charterCfg().wealthUnlocked && S.wealth.aum > 0){
+    const fee = S.wealth.aum * CFG.WEALTH_FEE_BPS_YR/12;
+    if(fee > 0) income("feeWealth", fee, { cash:fee, retained:fee }, "wealth-advisory-fee");
+    S.wealth.aum = Math.max(0, S.wealth.aum*(1 + CFG.WEALTH_AUM_DRIFT*randn()));
+  }
+  // CRA-style grant income for the Community Development charter
+  if(charterCfg().grantIncome > 0){
+    const g2 = charterCfg().grantIncome;
+    income("grantIncome", g2, { cash:g2, retained:g2 }, "cra-grant");
+    S.stats.grantReceived += g2;
+  }
   // tax on positive pre-tax income (no loss carry-forward in this model)
   const pre = preTaxOf(S.is.mtd);
   if(pre > 0){
@@ -2409,11 +2901,15 @@ function monthClose(){
   }
 
   updateMacro();
+  rollMacroEvents();
   S.rep = clamp(S.rep + (reputationTarget() - S.rep)*0.18, 0, 100);
 
   const mm = M();
   S.stats.peakAssets = Math.max(S.stats.peakAssets, mm.assets);
   S.stats.peakEquity = Math.max(S.stats.peakEquity, mm.equity);
+
+  checkMilestones();
+  if(S.over) return;
 
   S.history.push({
     day:S.day, ni:netIncomeOf(S.is.mtd), assets:mm.assets, equity:mm.equity,
@@ -2533,11 +3029,13 @@ function stepDay(){
 const SAVE_KEY = "reserve.bank.save.v1";
 const LOAN_F = ["id","name","product","tier","score","opened","apr","income","dti","status",
   "missed","lifeInterest","lifeFees","secured","lastPay","limit","balance","term","revolver",
-  "spendRate","nextAnnual","principal","remaining","payment","closedDay","closeWhy"];
+  "spendRate","nextAnnual","principal","remaining","payment","closedDay","closeWhy","region",
+  "guaranteedPct","helocMargin","collateralId","graduated","deferred","deferUsed","deferUntil",
+  "fraud","fraudReveal"];
 const DEP_F = ["id","name","kind","balance","apy","maturity","opened","status","beta","drift",
-  "closedDay","closeWhy"];
+  "closedDay","closeWhy","term"];
 const ROUND_TO = { balance:2, apr:2, dti:4, income:0, payment:2, lifeInterest:2, lifeFees:2,
-                   spendRate:4, beta:4, drift:6, apy:3, principal:2 };
+                   spendRate:4, beta:4, drift:6, apy:3, principal:2, guaranteedPct:4, helocMargin:4 };
 function packRows(arr, fields){
   return arr.map(o => fields.map(k => {
     const v = o[k];
@@ -2633,6 +3131,36 @@ function migrate(o){
   }
   if(o.policy.targetReserve == null) o.policy.targetReserve = 0.16;
   if(o.policy.targetCapital == null) o.policy.targetCapital = 0.11;
+
+  // --- new products / charters / fraud & compliance / events (this update) ---
+  if(!o.charter) o.charter = CHARTERS[o.difficulty] ? o.difficulty : "community";
+  if(!CHARTERS[o.charter]) o.charter = "community";
+  const newProducts = { heloc:true, studentloan:true, sbloan:false, securedcard:true };
+  for(const p in newProducts) if(o.policy.products[p] == null) o.policy.products[p] = newProducts[p];
+  const newMax = { heloc:75000, studentloan:80000, sbloan:250000, securedcard:5000 };
+  for(const p in newMax) if(o.policy.maxAmount[p] == null) o.policy.maxAmount[p] = newMax[p];
+  if(!o.policy.heloc) o.policy.heloc = { minScore:660, maxDTI:0.43 };
+  if(!o.policy.studentloan) o.policy.studentloan = { minHistoryMonths:24, thinFileMinScore:580, maxDTI:0.45 };
+  if(!o.policy.sbloan) o.policy.sbloan = { minDSCR:1.25, guaranteedPct:0 };
+  if(!o.policy.securedcard) o.policy.securedcard = { minCollateral:200 };
+  if(o.policy.fcSpend == null) o.policy.fcSpend = 0;
+  if(o.policy.regionTarget == null) o.policy.regionTarget = "";
+  if(o.policy.regionBudget == null) o.policy.regionBudget = 0;
+  if(o.policy.cdTerm == null) o.policy.cdTerm = 12;
+  if(o.rates){
+    const r = defaultRates(o.macro ? o.macro.rate : 4.25);
+    for(const p of PRODUCTS) if(!o.rates.loan[p]) o.rates.loan[p] = r.loan[p];
+  }
+  if(!o.wealth) o.wealth = { aum: 0 };
+  if(!o.events) o.events = { layoff:null, housing:null, competitor:null, regchange:null };
+  if(!o.charterState) o.charterState = { milestoneIdx: 0 };
+  if(o.stats){
+    if(o.stats.fraudLossAmt == null) o.stats.fraudLossAmt = 0;
+    if(o.stats.fraudLossCount == null) o.stats.fraudLossCount = 0;
+    if(o.stats.complianceAudits == null) o.stats.complianceAudits = 0;
+    if(o.stats.complianceFines == null) o.stats.complianceFines = 0;
+    if(o.stats.grantReceived == null) o.stats.grantReceived = 0;
+  }
   return o;
 }
 function adoptState(obj){
@@ -2824,10 +3352,11 @@ function renderOverview(){
       const is = S.is.mtd, last = S.is.last;
       const dom = dateParts(S.day).d;
       const projOrigFee = dom > 0 ? is.feeOrig/dom*CFG.DAYS_PER_MONTH : 0;
-      const trailingFee = last.feeLate + last.feeAnnual + last.feeInterchange + last.feeService;
+      const trailingFee = last.feeLate + last.feeAnnual + last.feeInterchange + last.feeService
+                         + last.feeWealth + last.grantIncome;
       const projFees = projOrigFee + trailingFee;
       const revenue = (m.projIntIncome + m.projSecInt) - (m.projDepInt + m.projSubInt + m.projWholeInt) + projFees;
-      const cost = m.projOpex + S.marketing.budget;
+      const cost = m.projOpex + S.marketing.budget + (S.policy.regionBudget||0) + (S.policy.fcSpend||0);
       const eff = cost > 0 ? cost/revenue : (revenue > 0 ? 0 : 1);
       const color = eff < 0 ? "var(--bad)" : eff <= 0.65 ? "var(--good)" : eff <= 1 ? "var(--warn)" : "var(--bad)";
       const net = revenue - cost;
@@ -2851,7 +3380,8 @@ function renderOverview(){
   );
 
   const is = S.is.mtd, nii = is.intLoans + is.intSec - is.intDep - is.intSub - is.intWhole;
-  const fees = is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService + is.gainSale;
+  const fees = is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService + is.gainSale
+             + is.feeWealth + is.grantIncome;
   const ni = netIncomeOf(is);
   setText("ovISPeriod", "month to date");
   setHTML("ovIS",
@@ -2861,6 +3391,7 @@ function renderOverview(){
     row("Provision for losses", provText(is.provision), is.provision>0?"bad":"good") +
     row("Fee income", fmtMoney(fees,0)) +
     row("Operating expense", "("+fmtMoney(is.opex + is.marketing,0)+")") +
+    (is.fraudLoss+is.compliance > 0 ? row("Fraud & compliance", "("+fmtMoney(is.fraudLoss+is.compliance,0)+")", "bad") : "") +
     row("Tax", "("+fmtMoney(is.tax,0)+")") +
     row("Net income", fmtMoney(ni,0), "total") +
     `<div class="rule"></div>` +
@@ -3276,6 +3807,7 @@ function handleBind(e){
   if(!el) return;
   let v;
   if(el.type === "checkbox") v = el.checked;
+  else if(el.dataset.str != null) v = el.value;
   else {
     v = parseFloat(el.value);
     if(!isFinite(v)) return;
@@ -3390,6 +3922,28 @@ function buildRates(){
     row("Days in reserve breach", S.reg.breachDays + " / " + CFG.RUN_BREACH_DAYS, S.reg.breachDays?"warn":"") +
     row("Capital strikes", S.reg.capStrikes + " / 3", S.reg.capStrikes?"bad":"") +
     row("You may still approve manually down to the legal floor", "", "muted"));
+
+  setHTML("rsNewProducts",
+    `<div class="hint" style="margin-bottom:8px">Each of these is underwritten on its own terms, not the consumer
+      score/DTI policy above.</div>` +
+    `<div style="font-size:11px;color:var(--text-2);margin:4px 0">HELOC — secured, variable-rate</div>` +
+    numRow("Minimum credit score", "policy.heloc.minScore", p.heloc.minScore, 5, 300, 850, null, null, "rates") +
+    numRow("Maximum DTI %", "policy.heloc.maxDTI", round2(p.heloc.maxDTI*100), 1, 5, 90,
+      "Floats with the market rate after origination — this is where a rate move hits the book.", 0.01, "rates") +
+    `<div class="rule"></div><div style="font-size:11px;color:var(--text-2);margin:4px 0">Student loans — thin-file friendly</div>` +
+    numRow("Minimum history for full review (months)", "policy.studentloan.minHistoryMonths", p.studentloan.minHistoryMonths, 1, 0, 120,
+      null, null, "rates") +
+    numRow("Thin-file score floor", "policy.studentloan.thinFileMinScore", p.studentloan.thinFileMinScore, 5, 300, 850,
+      "A short history is not an automatic decline — this is the score floor that still qualifies it.", null, "rates") +
+    numRow("Maximum DTI %", "policy.studentloan.maxDTI", round2(p.studentloan.maxDTI*100), 1, 5, 90, null, 0.01, "rates") +
+    `<div class="rule"></div><div style="font-size:11px;color:var(--text-2);margin:4px 0">Small-business — underwritten on the business</div>` +
+    numRow("Minimum debt-service coverage (×)", "policy.sbloan.minDSCR", p.sbloan.minDSCR, 0.05, 0.5, 3,
+      "Revenue-based, not the owner's personal score.", null, "rates") +
+    numRow("Government-guaranteed share %", "policy.sbloan.guaranteedPct", round2(p.sbloan.guaranteedPct*100), 5, 0, CFG.SB_GUARANTEE_MAX*100,
+      "SBA-style: the guaranteed slice carries a near-zero risk weight and the government eats its share of any loss. Snapshotted per loan at origination.", 0.01, "rates") +
+    `<div class="rule"></div><div style="font-size:11px;color:var(--text-2);margin:4px 0">Secured cards — cash-collateralised</div>` +
+    numRow("Minimum collateral $", "policy.securedcard.minCollateral", p.securedcard.minCollateral, 50, 0, 5000,
+      `Collateral becomes a deposit liability, making the card effectively risk-free. Graduates to an unsecured card at a ${CFG.SECURED_CARD_GRADUATE_SCORE} score.`, null, "rates"));
 }
 function bandDiagram(){
   const p = S.policy;
@@ -3467,6 +4021,37 @@ function buildMarketing(){
       (v>=0?"+":"") + v.toFixed(1), sign(v))).join("") +
     row("Target", reputationTarget().toFixed(1), "total") +
     row("Current", S.rep.toFixed(1), "total"));
+
+  setHTML("mkFraud",
+    `<label class="field"><span>Fraud &amp; compliance investment</span>
+       <input type="range" min="0" max="15000" step="250" data-bind="policy.fcSpend" data-re="marketing" value="${S.policy.fcSpend}">
+       <span class="hint">Currently <b class="num">${fmtMoney(S.policy.fcSpend)}</b> per month, charged as operating expense.</span></label>
+     <div class="hint" style="margin-bottom:8px">Diminishing returns: spend converts a slow, unpredictable tail risk into a smaller, budgeted cost. Zero spend is a legitimate playstyle — you just eat what comes, in fraud losses and audit fines.</div>
+     <div class="rule"></div>` +
+    row("Estimated fraud rate on new originations", pct(fraudRate(),2)) +
+    row("Estimated chance an audit finds a violation", pct(complianceViolationChance(),0)) +
+    row("Audit frequency", pct(CFG.COMPLIANCE_AUDIT_CHANCE*(charterCfg().auditMult||1),1) + "/mo" +
+        ((charterCfg().auditMult||1)>1 ? " — elevated for this charter" : ""), "muted") +
+    row("Audits to date", S.stats.complianceAudits) +
+    row("Fines paid lifetime", fmtMoney(S.stats.complianceFines,0), S.stats.complianceFines?"bad":"") +
+    row("Fraud losses lifetime", fmtMoney(S.stats.fraudLossAmt,0) + ` (${S.stats.fraudLossCount})`, S.stats.fraudLossAmt?"bad":""));
+
+  const byRegion = {}; for(const rgn of REGIONS) byRegion[rgn] = 0;
+  for(const a of S.loans) if(!isDead(a) && a.region) byRegion[a.region] = (byRegion[a.region]||0) + a.balance;
+  const totalExp = Object.values(byRegion).reduce((a,b)=>a+b,0) || 1;
+  setHTML("mkRegion",
+    `<label class="field"><span>Target region</span>
+       <select data-bind="policy.regionTarget" data-str data-re="marketing">
+         <option value=""${!S.policy.regionTarget?" selected":""}>No targeting</option>
+         ${REGIONS.map(r=>`<option value="${r}"${S.policy.regionTarget===r?" selected":""}>${r}</option>`).join("")}
+       </select></label>
+     <label class="field"><span>Regional campaign spend</span>
+       <input type="range" min="0" max="10000" step="250" data-bind="policy.regionBudget" data-re="marketing" value="${S.policy.regionBudget}">
+       <span class="hint">Currently <b class="num">${fmtMoney(S.policy.regionBudget)}</b> per month, charged as marketing expense.</span></label>
+     <div class="hint" style="margin-bottom:8px">Skews new applicants toward the target region — more volume there, and more concentration risk if a local downturn hits it.</div>
+     <div class="rule"></div>` + headRow("Loan exposure by region") +
+    REGIONS.map(r => row(r, fmtCompact(byRegion[r]) + " · " + pct(byRegion[r]/totalExp,0),
+      byRegion[r]/totalExp>0.35?"warn":null, true)).join(""));
 }
 
 /* ------------------------------ treasury ------------------------------ */
@@ -3855,6 +4440,10 @@ function buildFinancials(){
     row("Personal loans", fmtMoney(m.byProd.personal,0), null, true) +
     row("Auto loans", fmtMoney(m.byProd.auto,0), null, true) +
     row("Mortgages", fmtMoney(m.byProd.mortgage,0), null, true) +
+    row("HELOCs", fmtMoney(m.byProd.heloc,0), null, true) +
+    row("Student loans", fmtMoney(m.byProd.studentloan,0), null, true) +
+    row("Small-business loans", fmtMoney(m.byProd.sbloan,0), null, true) +
+    row("Secured cards", fmtMoney(m.byProd.securedcard,0), null, true) +
     row("Allowance for loan losses", "("+fmtMoney(g.allowance,0)+")") +
     row("Net loans", fmtMoney(m.netLoans,0)) +
     row("TOTAL ASSETS", fmtMoney(m.assets,0), "total") +
@@ -3873,7 +4462,8 @@ function buildFinancials(){
 
   const is = isPeriod();
   const nii = is.intLoans + is.intSec - is.intDep - is.intSub - is.intWhole;
-  const fees = is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService + is.gainSale;
+  const fees = is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService + is.gainSale
+             + is.feeWealth + is.grantIncome;
   setHTML("finIS",
     headRow("Interest income") +
     row("Loans and cards", fmtMoney(is.intLoans,0), null, true) +
@@ -3891,10 +4481,14 @@ function buildFinancials(){
     row("Interchange", fmtMoney(is.feeInterchange,0), null, true) +
     row("Deposit service charges", fmtMoney(is.feeService,0), null, true) +
     row("Net gain (loss) on asset sales", fmtMoney(is.gainSale,0), sign(is.gainSale), true) +
+    row("Wealth management advisory fees", fmtMoney(is.feeWealth,0), null, true) +
+    row("CRA grant income", fmtMoney(is.grantIncome,0), null, true) +
     row("Total fee income", fmtMoney(fees,0)) +
     headRow("Non-interest expense") +
     row("Operating expense", "("+fmtMoney(is.opex,0)+")", null, true) +
     row("Marketing", "("+fmtMoney(is.marketing,0)+")", null, true) +
+    row("Fraud losses", "("+fmtMoney(is.fraudLoss,0)+")", is.fraudLoss>0?"bad":null, true) +
+    row("Fraud & compliance spend / fines", "("+fmtMoney(is.compliance,0)+")", is.compliance>0?"bad":null, true) +
     row("PRE-TAX INCOME", fmtMoney(preTaxOf(is),0), "total") +
     row("Income tax", "("+fmtMoney(is.tax,0)+")") +
     row("NET INCOME", fmtMoney(netIncomeOf(is),0), "total"));
@@ -4023,7 +4617,7 @@ function buildSettings(){
         and repricing becomes a scheduled decision rather than a monthly chore. The size of each move scales
         with the interval, so the long-run range is the same either way.</span></label>` +
     `<div class="rule"></div>` +
-    row("Bank", esc(S.bankName)) + row("Difficulty", DIFFICULTIES[S.difficulty].name) +
+    row("Bank", esc(S.bankName)) + row("Charter", (CHARTERS[S.charter]||CHARTERS.community).name) +
     row("Founded", "day 0") + row("Days survived", S.day) +
     row("Months closed", S.history.length));
 
@@ -4178,20 +4772,22 @@ function showForbearanceModal(){
   };
 }
 function showNewBank(){
-  let diff = "denovo";
+  let charter = "community";
   const root = $("modalRoot");
+  const productList = ch => PRODUCTS.filter(p => ch.startProducts[p]).map(p=>PRODUCT_LABEL[p]).join(", ");
   root.innerHTML = `<div class="scrim"><div class="modal">
     <div class="mh"><h2>Charter a bank</h2>
       <p>You set the rates, write the underwriting policy, and answer for the balance sheet.
          There is no win condition — only how long you last and how large you get.</p></div>
     <div class="mb">
       <label class="field"><span>Bank name</span><input type="text" id="nbName" value="${esc(pick(["Meridian Savings","Harbor Point Bank","Cedar Union Trust","Ironvale Bank","Northgate Savings","Kestrel Financial","Blackwater Trust","Alderman Bank"]))}"></label>
-      <div style="font-size:11px;color:var(--text-2);margin:10px 0 2px">Opening position</div>
+      <div style="font-size:11px;color:var(--text-2);margin:10px 0 2px">Bank charter</div>
       <div class="diffopts" id="nbDiff">
-        ${Object.values(DIFFICULTIES).map(d=>`<div class="diffopt${d.key===diff?" sel":""}" data-d="${d.key}">
+        ${Object.values(CHARTERS).map(d=>`<div class="diffopt${d.key===charter?" sel":""}" data-d="${d.key}">
           <div class="dt"><span>${d.name}</span></div>
           <div class="dd">${d.note}</div>
-          <div class="dn">${fmtMoney(d.capital)} capital · ${fmtMoney(d.deposits)} deposits · reputation ${d.rep}</div>
+          <div class="dn">${fmtMoney(d.capital)} capital · ${fmtMoney(d.deposits)} deposits · reputation ${d.rep}
+            · offers: ${productList(d)}</div>
         </div>`).join("")}
       </div>
       <div class="hint" style="margin-top:10px">Reserve ratio must stay at or above ${pct(CFG.REQ_RESERVE,0)} and the
@@ -4201,11 +4797,11 @@ function showNewBank(){
   </div></div>`;
   root.querySelector("#nbDiff").addEventListener("click", e => {
     const o = e.target.closest("[data-d]"); if(!o) return;
-    diff = o.dataset.d;
-    for(const c of root.querySelectorAll(".diffopt")) c.classList.toggle("sel", c.dataset.d === diff);
+    charter = o.dataset.d;
+    for(const c of root.querySelectorAll(".diffopt")) c.classList.toggle("sel", c.dataset.d === charter);
   });
   root.querySelector("#nbStart").onclick = () => {
-    newGame(root.querySelector("#nbName").value.trim() || "Reserve Trust", diff);
+    newGame(root.querySelector("#nbName").value.trim() || "Reserve Trust", charter);
     closeModal();
     PF.page = 0; counterOpen = null;
     setTab("overview");
@@ -4484,7 +5080,7 @@ function wire(){
     if(S.reg.pendingForbearance) showForbearanceModal();
     else toast("Welcome back", `${S.bankName}, ${fmtDate(S.day)}. Resumed paused — press space or 1× to continue.`, "ok");
   } else {
-    newGame("Reserve Trust", "denovo");   // placeholder so the UI has state behind the dialog
+    newGame("Reserve Trust", "community");   // placeholder so the UI has state behind the dialog
     S.speed = 0;
     setTab("overview");
     showNewBank();

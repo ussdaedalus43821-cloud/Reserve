@@ -589,7 +589,10 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
         <div class="card"><h3>Deposit book sale</h3><div class="body" id="trDepSale"></div></div>
       </div>
       <div class="grid g2" style="margin-bottom:12px">
+        <div class="card"><h3>Personal investment</h3><div class="body" id="trFounder"></div></div>
         <div class="card"><h3>Raise equity</h3><div class="body" id="trRaise"></div></div>
+      </div>
+      <div class="grid" style="margin-bottom:12px">
         <div class="card"><h3>Subordinated notes · Tier 2</h3><div class="body" id="trSub"></div></div>
       </div>
       <div class="grid g2" style="margin-bottom:12px">
@@ -698,6 +701,17 @@ const CFG = {
   RAISE_FEE: 0.06,           // placement fee on an equity raise
   RAISE_FEE_DISTRESS: 0.12,  // ... charged when you are the one who needs it
   RAISE_COOLDOWN: 360,       // days between raises
+  // personal capital: the founder's own money, not an outside investor's —
+  // no placement fee, no cooldown, and it doesn't dilute (it can't: it's
+  // already the founder's own share of the pie getting bigger). The real
+  // constraint is that a person's own wallet is finite and refills slowly,
+  // scaled off what they put into the charter at founding.
+  FOUNDER_CAPACITY_START_MULT: 0.4,   // starting personal capacity, × founding capital
+  FOUNDER_CAPACITY_MAX_MULT: 0.6,     // cap on stored capacity, × founding capital
+  FOUNDER_CAPACITY_REGEN_MULT: 0.015, // monthly regen, × the cap
+  FOUNDER_MIN: 10000,
+  FOUNDER_REP_BOOST: 1,
+  FOUNDER_REP_BOOST_DISTRESS: 4,      // stepping in personally, in trouble, reads as real confidence
   SUB_TERM: 10,              // subordinated debt term, years
   SUB_SPREAD: 3.0,           // over the policy rate, for a healthy issuer
   LINE_CUT_CLOSE: 0.08,      // share of cardholders who close after a line cut
@@ -1074,7 +1088,8 @@ function blankCapital(){
   return { tranches: [], wholesale: [], cocos: [], interbank: [], lastRaise: -9999, raises: 0, raised: 0, raiseFees: 0,
            borrowCount: 0, depSaleCount: 0, depSoldAmt: 0, depPremium: 0, ownershipPct: 1,
            cocoConversions: 0, cocoConverted: 0, bailoutReceived: 0,
-           dividends: 0, lineCuts: 0, linesCut: 0, saleCount: 0, saleProceeds: 0, saleLoss: 0 };
+           dividends: 0, lineCuts: 0, linesCut: 0, saleCount: 0, saleProceeds: 0, saleLoss: 0,
+           founderCapacity: 0, founderCapacityMax: 0, founderInvested: 0, founderCount: 0 };
 }
 function netIncomeOf(is){
   return is.intLoans + is.intSec - is.intDep - is.intSub - is.intWhole - is.intInterbank - is.provision
@@ -1172,6 +1187,8 @@ function newGame(bankName, charterKey){
              crossSellBooked:0, sandboxUsed:false },
     log: [], decisions: [],
   };
+  S.capital.founderCapacityMax = Math.round(ch.capital * CFG.FOUNDER_CAPACITY_MAX_MULT);
+  S.capital.founderCapacity = Math.round(ch.capital * CFG.FOUNDER_CAPACITY_START_MULT);
   LEDGER_ERRORS = [];
   // M() memoizes on a module-level version counter + the cached rate, neither
   // of which newGame() used to touch — so a fresh game's very first metrics
@@ -2551,6 +2568,29 @@ function raiseEquity(gross){
   return true;
 }
 
+// The founder's own money, not an outside investor's: no placement fee, no
+// cooldown, and it doesn't dilute — it's already the founder's own share of
+// the pie getting bigger, so ownership moves up, not down. What limits it is
+// that a person's own wallet is finite; founderCapacity refills slowly on
+// its own schedule in monthClose(), independent of anything the bank does.
+function investPersonalCapital(amount){
+  if(S.over) return false;
+  amount = clamp(Math.round(amount), CFG.FOUNDER_MIN, S.capital.founderCapacity);
+  if(amount < CFG.FOUNDER_MIN || S.capital.founderCapacity < CFG.FOUNDER_MIN) return false;
+  const pre = Math.max(1, M().tier1);
+  post({ cash: amount, paidIn: amount }, "founder-investment");
+  S.capital.ownershipPct = clamp((S.capital.ownershipPct*pre + amount)/(pre + amount), 0, 1);
+  S.capital.founderCapacity -= amount;
+  S.capital.founderInvested += amount; S.capital.founderCount++;
+  const distress = inDistress();
+  S.rep = clamp(S.rep + (distress ? CFG.FOUNDER_REP_BOOST_DISTRESS : CFG.FOUNDER_REP_BOOST), 0, 100);
+  logEvent(`${fmtMoney(amount)} of personal capital went in${distress ? " — a founder backing a struggling bank with their own money, in public view" : ""}. No fee, no dilution.`,
+           "ok");
+  toast("Personal capital invested", `${fmtMoney(amount)} in, no strings. Capital ratio now ${pct(M().car)}.`, "ok");
+  bumpAll(); saveGame();
+  return true;
+}
+
 function subDebtTerms(){
   const m = M();
   const distress = inDistress();
@@ -3179,6 +3219,12 @@ function monthClose(){
 
   treasuryOps();
 
+  // personal capacity slowly refills — the founder earns/saves outside the
+  // bank too — capped at its max, no cash-side entry (it isn't the bank's
+  // money yet)
+  S.capital.founderCapacity = Math.min(S.capital.founderCapacityMax,
+    S.capital.founderCapacity + S.capital.founderCapacityMax*CFG.FOUNDER_CAPACITY_REGEN_MULT);
+
   // subordinated debt: coupon, then any maturing tranche
   if(S.capital.tranches.length){
     let coupon = 0;
@@ -3717,6 +3763,12 @@ function migrate(o){
     if(o.stats.sandboxUsed == null) o.stats.sandboxUsed = false;
   }
   if(!o.sandbox) o.sandbox = { freeOpex: false };
+  if(o.capital.founderCapacityMax == null){
+    const foundingCapital = (CHARTERS[o.charter] || CHARTERS.community).capital;
+    o.capital.founderCapacityMax = Math.round(foundingCapital * CFG.FOUNDER_CAPACITY_MAX_MULT);
+    o.capital.founderCapacity = Math.round(foundingCapital * CFG.FOUNDER_CAPACITY_START_MULT);
+    o.capital.founderInvested = 0; o.capital.founderCount = 0;
+  }
   return o;
 }
 function adoptState(obj){
@@ -4849,6 +4901,28 @@ function buildTreasury(){
     `<button class="btn" id="btnDepSale" style="margin-top:9px;width:100%" ${dq.ok?"":"disabled"}>Sell deposit book</button>` +
     (S.capital.depSaleCount ? `<div class="hint" style="margin-top:6px">${S.capital.depSaleCount} sale${S.capital.depSaleCount===1?"":"s"} · ${fmtCompact(S.capital.depSoldAmt)} sold · ${fmtCompact(S.capital.depPremium)} of premium booked.</div>` : ""));
 
+  const fc = S.capital.founderCapacity, fcMax = S.capital.founderCapacityMax;
+  const suggestFounder = () => {
+    const want = needCap > 0 ? Math.ceil(needCap/10000)*10000 : Math.round(fc/2/10000)*10000;
+    return Math.max(CFG.FOUNDER_MIN, Math.min(fc, want || CFG.FOUNDER_MIN));
+  };
+  setHTML("trFounder",
+    `<div class="hint" style="margin-bottom:9px">Your own money, wired straight in — no placement fee, and it
+      doesn't dilute you, since it's already your own share of the pie getting bigger. What limits it is that your
+      own pocket is finite: it refills slowly on its own, whatever the bank is doing.</div>` +
+    row("Available right now", fmtMoney(fc,0)) +
+    row("Personal capacity ceiling", fmtMoney(fcMax,0), "muted") +
+    row("Invested to date", `${fmtMoney(S.capital.founderInvested,0)}${S.capital.founderCount?` · ${S.capital.founderCount} time${S.capital.founderCount===1?"":"s"}`:""}`) +
+    row("Your ownership today", pct(S.capital.ownershipPct,1)) +
+    `<div style="display:flex;gap:7px;align-items:flex-end;margin-top:10px">
+      <label class="field" style="flex:1;margin:0"><span>Amount</span>
+        <input type="number" id="trFounderAmt" step="10000" min="${CFG.FOUNDER_MIN}" max="${Math.max(CFG.FOUNDER_MIN,fc)}" value="${suggestFounder()}"></label>
+      <button class="btn primary" id="btnFounder" ${fc>=CFG.FOUNDER_MIN && !S.over ? "" : "disabled"}>Invest personally</button>
+    </div>
+    <div class="hint" id="trFounderPreview" style="margin-top:6px"></div>` +
+    (fc < CFG.FOUNDER_MIN ? `<div class="hint" style="color:var(--warn)">Tapped out for now — it refills a little
+       every month regardless of what the bank does.</div>` : ""));
+
   const rc = raiseCapacity();
   const suggest = (max) => {
     const want = needCap > 0 ? Math.ceil(needCap/25000)*25000 : Math.round(max/2/25000)*25000;
@@ -4983,6 +5057,18 @@ function updateSalePreview(){
     : `Nothing to sell in that portfolio.`;
 }
 
+function updateFounderPreview(){
+  const el = $("trFounderPreview"); const inp = $("trFounderAmt"); if(!el || !inp) return;
+  const amount = clamp(+inp.value || 0, 0, S.capital.founderCapacity);
+  const prev = ratioPreview(amount, 0, 0);
+  const pre = Math.max(1, M().tier1), preOwn = S.capital.ownershipPct;
+  const postOwn = amount > 0 ? clamp((preOwn*pre + amount)/(pre + amount), 0, 1) : preOwn;
+  el.innerHTML = amount > 0
+    ? `Moves total capital from <b>${pct(prev.carBefore)} → ${pct(prev.carAfter)}</b>
+       (Tier 1 ${pct(prev.t1Before)} → ${pct(prev.t1After)}). Your ownership goes
+       <b>${pct(preOwn,1)} → ${pct(postOwn,1)}</b> — up, not down.`
+    : "";
+}
 function updateRaisePreview(){
   const el = $("trRaisePreview"); const inp = $("trRaiseAmt"); if(!el || !inp) return;
   const rc = raiseCapacity();
@@ -5691,6 +5777,7 @@ function showGameOver(){
         <div class="gostat"><div class="k">Lifetime charge-offs</div><div class="v">${fmtCompact(S.stats.chargeOffAmt)}</div></div>
         <div class="gostat"><div class="k">Lifetime net income</div><div class="v">${fmtCompact(netIncomeOf(S.is.life))}</div></div>
         <div class="gostat"><div class="k">Dividends taken out</div><div class="v">${fmtCompact(S.capital.dividends)}</div></div>
+        <div class="gostat"><div class="k">Personal capital invested</div><div class="v">${fmtCompact(S.capital.founderInvested)}</div></div>
         <div class="gostat"><div class="k">Outside capital raised</div><div class="v">${fmtCompact(S.capital.raised)}</div></div>
         <div class="gostat"><div class="k">Ownership retained</div><div class="v">${pct(S.capital.ownershipPct,1)}</div></div>
         <div class="gostat"><div class="k">Government support</div><div class="v">${S.stats.everBailedOut ? fmtCompact(S.capital.bailoutReceived)+" (marked)" : "never needed"}</div></div>
@@ -5773,6 +5860,7 @@ function wire(){
       return;
     }
     if(e.target.id === "trRaiseAmt"){ updateRaisePreview(); return; }
+    if(e.target.id === "trFounderAmt"){ updateFounderPreview(); return; }
     if(e.target.id === "trSaleShare"){
       TR.saleShare = +e.target.value;
       setText("trSaleShareV", TR.saleShare + "%");
@@ -5866,6 +5954,12 @@ function wire(){
         }
         if(confirm(msg)) sellSecurityLot(lotId);
       }
+      buildTreasury();
+      return;
+    }
+    if(id === "btnFounder"){
+      if(S.over) return;
+      investPersonalCapital(+$("trFounderAmt").value);
       buildTreasury();
       return;
     }

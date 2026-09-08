@@ -544,7 +544,7 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
     <section class="tabpanel" data-panel="treasury">
       <div class="grid g2" style="margin-bottom:12px">
         <div class="card"><h3>Capital position</h3><div class="body" id="trPosition"></div></div>
-        <div class="card"><h3>Investment securities</h3><div class="body" id="trSecurities"></div></div>
+        <div class="card"><h3>Investments</h3><div class="body" id="trSecurities"></div></div>
       </div>
       <div class="grid g2" style="margin-bottom:12px">
         <div class="card"><h3>Wholesale funding</h3><div class="body" id="trWhole"></div></div>
@@ -688,8 +688,24 @@ const CFG = {
   BAILOUT_DAYS: 720,
   BAILOUT_VALUATION_DISCOUNT: 0.5,   // the government's stake is priced as if equity were worth half
   BAILOUT_REP_PENALTY: 8,            // permanent drag on the reputation target
-  SEC_DURATION: 4.0,         // years; how hard a rate move marks the securities book
   SEC_SELL_SPREAD: 0.001,    // bid/ask on an orderly securities sale
+
+  // --- investment securities: discrete lots, HTM/AFS accounting choice ----
+  // yield = policy rate + type spread + duration spread, fixed at purchase
+  SEC_BASE_SPREAD: { treasury:0, agency:0.3, muni:0.5, corporate:1.5 },
+  SEC_DURATION_SPREAD: { short:-0.4, medium:0.3, long:1.1 },
+  // modified-duration approximation: mark ≈ 1 − duration×(Δyield); longer
+  // duration swings much harder on the same rate move, on purpose
+  SEC_DURATION_YEARS: { short:1.5, medium:6, long:20 },
+  SEC_DURATION_MONTHS: { short:18, medium:72, long:240 },
+  SEC_MARK_MIN: 0.35, SEC_MARK_MAX: 1.55,
+  // risk weight depends on what the bond is, not how it's accounted for
+  SEC_RW: { treasury:0, agency:0.20, muni:0.20, corporate:0.50 },
+  // corporate bonds carry a small default probability of their own — real,
+  // but far below anything in the loan book
+  SEC_CORP_PD_ANNUAL: 0.008,
+  SEC_CORP_LGD: 0.40,
+
   SUB_CALL_PROTECT: 5,       // years of call protection on subordinated notes
   SUB_CALL_PREMIUM: 0.02,    // premium to call at or after the call date
   SUB_CALL_STEP: 0.015,      // extra premium per year of remaining call protection
@@ -702,8 +718,9 @@ const CFG = {
   // premium a buyer pays for a core deposit franchise, by product
   DEP_PREMIUM: { checking: 0.060, savings: 0.030, cd: 0.005 },
 
-  // risk weights for the capital ratio
-  RW: { cash:0, securities:0.20, mortgage:0.50, auto:0.50, personal:1.00, card:1.00,
+  // risk weights for the capital ratio (securities have their own map — SEC_RW — since
+  // risk weight depends on issuer type, independent of HTM/AFS accounting treatment)
+  RW: { cash:0, mortgage:0.50, auto:0.50, personal:1.00, card:1.00,
         heloc:0.50, studentloan:1.00, sbloan:1.00, securedcard:0.00 },
   CCF_CARD: 0.50,            // credit-conversion factor on undrawn revolving lines (card/HELOC/secured card)
   CARD_CASH_DRAW: 0.25,      // liquidity assumed drawn at card-like origination
@@ -811,6 +828,10 @@ const SECURED = { mortgage:true, auto:true, personal:false, card:false,
 const TERMS = { personal:[24,36,48,60], auto:[48,60,72], mortgage:[360],
                 studentloan:CFG.STUDENT_TERMS, sbloan:CFG.SB_TERMS };
 const REGIONS = ["Northside","Riverfront","Old Mill","Eastgate","Lakeview","Highland"];
+const SEC_TYPES = ["treasury","agency","muni","corporate"];
+const SEC_TYPE_LABEL = { treasury:"Treasuries", agency:"Agency MBS", muni:"Municipal bonds", corporate:"Corporate bonds" };
+const SEC_DURATIONS = ["short","medium","long"];
+const SEC_DURATION_LABEL = { short:"Short (~1–2yr)", medium:"Medium (~5–7yr)", long:"Long (~10–30yr)" };
 
 // spread over the market policy rate used to derive the prevailing market APR
 const MKT_SPREAD = {
@@ -945,7 +966,8 @@ let S = null;
 let LEDGER_ERRORS = [];
 
 const IS_LINES = ["intLoans","intSec","intDep","intSub","intWhole","intInterbank","provision","feeOrig","feeLate","feeAnnual",
-                  "feeInterchange","feeService","gainSale","feeWealth","grantIncome","opex","marketing","fraudLoss","compliance","tax"];
+                  "feeInterchange","feeService","gainSale","feeWealth","grantIncome","opex","marketing","fraudLoss","compliance",
+                  "secImpair","tax"];
 function blankIS(){ const o={}; for(const k of IS_LINES) o[k]=0; return o; }
 function blankCapital(){
   return { tranches: [], wholesale: [], cocos: [], interbank: [], lastRaise: -9999, raises: 0, raised: 0, raiseFees: 0,
@@ -957,7 +979,7 @@ function netIncomeOf(is){
   return is.intLoans + is.intSec - is.intDep - is.intSub - is.intWhole - is.intInterbank - is.provision
        + is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService + is.gainSale
        + is.feeWealth + is.grantIncome
-       - is.opex - is.marketing - is.fraudLoss - is.compliance - is.tax;
+       - is.opex - is.marketing - is.fraudLoss - is.compliance - is.secImpair - is.tax;
 }
 function preTaxOf(is){ return netIncomeOf(is) + is.tax; }
 
@@ -986,11 +1008,11 @@ function newGame(bankName, charterKey){
 
     // general ledger
     gl: { cash: ch.capital + ch.deposits, securities: 0, grossLoans: 0,
-          allowance: 0, deposits: ch.deposits, subDebt: 0, wholesale: 0, interbank: 0, secBookYield: 0,
+          allowance: 0, deposits: ch.deposits, subDebt: 0, wholesale: 0, interbank: 0,
           paidIn: ch.capital, retained: 0 },
     capital: blankCapital(),
 
-    loans: [], depAccts: [], apps: [],
+    loans: [], depAccts: [], apps: [], securities: [],
     rates: defaultRates(marketRate),
     fees: { origPct: 1.0, lateFee: 35, cardAnnual: 0, depMonthly: 0 },
     policy: {
@@ -1002,6 +1024,7 @@ function newGame(bankName, charterKey){
       maxAmount: Object.assign({ card:25000, personal:40000, auto:60000, mortgage:500000,
                    heloc:75000, studentloan:80000, sbloan:250000, securedcard:5000 }, ch.maxAmount||{}),
       sweep: false, sweepBuffer: 0.18,
+      sweepProfile: { type:"treasury", duration:"short", classification:"afs" },
       apyEmergency: 0,
       heloc: { minScore:660, maxDTI:0.43 },
       studentloan: { minHistoryMonths:24, thinFileMinScore:580, maxDTI:0.45 },
@@ -1092,9 +1115,12 @@ function acc(line, amt){
 function income(line, amt, d, tag){ acc(line, amt); post(d, tag||line); }
 
 /* --------------------------- derived metrics --------------------------- */
-let _mv = 0, _mCacheV = -1, _mCache = null;
+let _mv = 0, _mCacheV = -1, _mCache = null, _mCacheRate = null;
 function M(){
-  if(_mCacheV === _mv && _mCache) return _mCache;
+  // the cache also has to invalidate on a bare rate change — AFS lots mark
+  // to market off S.macro.rate, which can move without any ledger posting
+  // at all (a rate-shock event, the periodic policy-rate reset)
+  if(_mCacheV === _mv && _mCache && _mCacheRate === S.macro.rate) return _mCache;
   const g = S.gl;
   let rwaCredit = 0, cardUndrawn = 0, gross = 0, delinq = 0, npl = 0, active = 0, projInt = 0;
   const byProd = { card:0, personal:0, auto:0, mortgage:0, heloc:0, studentloan:0, sbloan:0, securedcard:0 };
@@ -1127,10 +1153,28 @@ function M(){
   }
   let projSubInt = 0; for(const t of S.capital.tranches) projSubInt += t.amount*t.rate/1200;
   let projWholeInt = 0; for(const w of S.capital.wholesale) projWholeInt += w.amount*w.rate/1200;
-  const projSecInt = g.securities*(g.secBookYield || secMarketYield())/1200;
 
-  const rwa = rwaCredit + g.securities*CFG.RW.securities;
-  const assets = g.cash + g.securities + g.grossLoans - g.allowance;
+  // securities: carrying value depends on the HTM/AFS choice made at purchase —
+  // HTM sits at amortised cost (book), AFS marks to market every tick. The gap
+  // between the two, summed across the AFS book, *is* the unrealised position
+  // that flows into equity — no separate ledger account needed for it.
+  let secBook = 0, secCarrying = 0, secRWA = 0, projSecInt = 0;
+  const secByClass = { htm: { book:0, market:0, count:0 }, afs: { book:0, market:0, count:0 } };
+  const secByType = {}; for(const t of SEC_TYPES) secByType[t] = 0;
+  for(const lot of S.securities){
+    if(isDeadSec(lot)) continue;
+    const mv = secLotMarketValue(lot), carry = secLotCarrying(lot);
+    secBook += lot.bookValue; secCarrying += carry;
+    secRWA += carry * CFG.SEC_RW[lot.type];
+    secByType[lot.type] += carry;
+    const cls = secByClass[lot.classification];
+    cls.book += lot.bookValue; cls.market += mv; cls.count++;
+    projSecInt += lot.bookValue*lot.couponRate/1200;
+  }
+  const secAOCI = secCarrying - secBook;
+
+  const rwa = rwaCredit + secRWA;
+  const assets = g.cash + secCarrying + g.grossLoans - g.allowance;
   const liabilities = g.deposits + g.subDebt + g.wholesale + g.interbank;
   // reserve requirement is held against everything that can be withdrawn or
   // refuse to roll — retail deposits, wholesale money and interbank borrowing
@@ -1138,7 +1182,9 @@ function M(){
   // a real, immediate withdrawal demand) — it just is not a free fix to the
   // reported ratio, since the draw adds to both sides at once.
   const funding = g.deposits + g.wholesale + g.interbank;
-  const equity = g.paidIn + g.retained;          // Tier 1
+  // AFS unrealised gains/losses hit equity — and the capital ratio — the
+  // same tick a rate move happens. HTM lots never touch this number at all.
+  const equity = g.paidIn + g.retained + secAOCI;          // Tier 1
   // Basel-style: subordinated debt is Tier 2 capital, admissible only up to the
   // size of Tier 1. It props up the capital ratio but never cures insolvency.
   const tier2 = equity > 0 ? Math.min(g.subDebt, equity) : 0;
@@ -1148,7 +1194,8 @@ function M(){
     subDebt: g.subDebt, wholesale: g.wholesale, interbank: g.interbank, funding,
     wholeShare: funding > 0 ? g.wholesale/funding : 0,
     t1r: rwa > 0 ? equity/rwa : Infinity,
-    cash: g.cash, securities: g.securities, grossLoans: g.grossLoans,
+    cash: g.cash, securities: secCarrying, secBook, secAOCI, secRWA, secByClass, secByType,
+    grossLoans: g.grossLoans,
     allowance: g.allowance, netLoans: g.grossLoans - g.allowance, deposits: g.deposits,
     rr: funding>0 ? g.cash/funding : Infinity,
     car: rwa>0 ? capital/rwa : Infinity,
@@ -1167,7 +1214,7 @@ function M(){
     projIntIncome: projInt, projSecInt, projDepInt, projSubInt, projWholeInt,
     projOpex: CFG.OPEX_BASE + assets*CFG.OPEX_ASSET_BPS + openDep*CFG.OPEX_DEP_ACCT + active*CFG.OPEX_CREDIT_ACCT,
   };
-  _mCacheV = _mv;
+  _mCacheV = _mv; _mCacheRate = S.macro.rate;
   return _mCache;
 }
 // closed, charged off, or sold out of the portfolio
@@ -1605,16 +1652,7 @@ function decide(app, action, offer){
 // bank simply cannot fund the outflow — the caller decides what that means.
 function ensureCash(amount){
   if(S.gl.cash >= amount) return true;
-  if(S.gl.securities > 0){
-    const need = amount - S.gl.cash;
-    const px = secMark()*(1 - CFG.SECURITIES_HAIRCUT);   // marked, then hit for the fire sale
-    const sell = Math.min(S.gl.securities, need/px);
-    const proceeds = sell*px;
-    const pl = proceeds - sell;
-    post({ securities:-sell, cash:proceeds, retained:pl }, "securities-sale");
-    acc("gainSale", pl);
-    if(pl < -500) logEvent(`Sold ${fmtMoney(sell)} of securities under pressure — ${fmtMoney(-pl)} realised loss.`, "warn");
-  }
+  if(S.gl.securities > 0) raiseSecuritiesCash(amount - S.gl.cash, CFG.SECURITIES_HAIRCUT);
   return S.gl.cash >= amount - 0.01;
 }
 function withdraw(amount, tag){
@@ -1896,49 +1934,133 @@ function closeDepositAccount(d, why){
   return true;
 }
 
-/* ============================== treasury ===============================
-   Securities carry at amortised cost but are worth what the market will pay.
-   A bond bought at 3% is worth less once new bonds yield 5%, and selling is
-   what turns that paper loss into a real one — the whole reason a bank can be
-   solvent on paper and dead the moment it needs the cash.
+/* ============================== treasury ================================
+   Investment securities, bought in discrete lots. Each lot picks a type
+   (credit quality / risk weight), a duration bucket (rate sensitivity), and
+   an accounting classification at the moment of purchase:
+     - held-to-maturity (HTM): carried at amortised cost. A rate move does
+       not touch the balance sheet at all while the lot is held — but selling
+       one early taints the *entire* remaining HTM book, forcing it all to
+       mark to market on the spot. A real one-way door, not a free toggle.
+     - available-for-sale (AFS): marked to market every period, straight
+       into equity and the capital ratio, whether or not anything is sold.
+   This is the SVB mechanic: HTM looks safe on paper right up until a forced
+   sale turns years of hidden rate risk into a single realised loss.
    ===================================================================== */
-function secMarketYield(){ return Math.max(0.2, S.macro.rate - 0.5); }
-function secMark(){
-  if(S.gl.securities <= 0) return 1;
-  const gap = (secMarketYield() - (S.gl.secBookYield || secMarketYield()))/100;
-  return clamp(1 - gap*CFG.SEC_DURATION, 0.55, 1.25);
+function isDeadSec(l){ return l.status !== "open"; }
+// the market yield a lot of this type/duration would command today — used
+// both to price new purchases and to mark existing lots
+function secLotMarketYield(type, duration){
+  return Math.max(0.2, S.macro.rate + CFG.SEC_BASE_SPREAD[type] + CFG.SEC_DURATION_SPREAD[duration]);
 }
-function secUnrealized(){ return S.gl.securities*(secMark() - 1); }
-function addSecurities(amount){          // blend the purchase into the book yield
-  const g = S.gl, y = secMarketYield();
-  const base = g.securities > 0 ? (g.secBookYield || y) : y;
-  g.secBookYield = (g.securities*base + amount*y)/(g.securities + amount);
-  post({ cash:-amount, securities:amount }, "securities-buy");
+function secLotMark(lot){
+  const gap = (secLotMarketYield(lot.type, lot.duration) - lot.couponRate)/100;
+  return clamp(1 - gap*CFG.SEC_DURATION_YEARS[lot.duration], CFG.SEC_MARK_MIN, CFG.SEC_MARK_MAX);
 }
-function buySecurities(amount){
+function secLotMarketValue(lot){ return lot.bookValue * secLotMark(lot); }
+// what the lot counts as on the balance sheet right now: market value for
+// AFS, unmoved amortised cost for HTM — this is the entire point of the choice
+function secLotCarrying(lot){ return lot.classification === "afs" ? secLotMarketValue(lot) : lot.bookValue; }
+
+function buySecurityLot(amount, type, duration, classification){
   if(S.over) return false;
   const m = M(), L = limits(false);
   const room = Math.max(0, m.cash - L.rr*m.funding);
   amount = Math.round(clamp(amount, 0, room));
   if(amount < 1000) return false;
-  addSecurities(amount);
-  logEvent(`Bought ${fmtMoney(amount)} of securities at ${rate(secMarketYield())}.`, "info");
+  const coupon = secLotMarketYield(type, duration);
+  const lot = { id: S.nextId++, type, duration, classification, bookValue: amount,
+                couponRate: coupon, opened: S.day, maturity: S.day + CFG.SEC_DURATION_MONTHS[duration]*CFG.DAYS_PER_MONTH,
+                status: "open" };
+  S.securities.push(lot);
+  post({ cash:-amount, securities:amount }, "securities-buy");
+  logEvent(`Bought ${fmtMoney(amount)} of ${SEC_TYPE_LABEL[type]} (${SEC_DURATION_LABEL[duration]}, ${classification.toUpperCase()}) at ${rate(coupon)}.`, "info");
   bumpAll(); saveGame();
   return true;
 }
-function sellSecurities(amount){
+// selling one HTM lot early taints every other open HTM lot to AFS
+function taintHTM(){
+  let n = 0;
+  for(const l of S.securities) if(l.status === "open" && l.classification === "htm"){ l.classification = "afs"; n++; }
+  return n;
+}
+function sellSecurityLot(id){
   if(S.over) return false;
-  amount = Math.round(clamp(amount, 0, S.gl.securities));
-  if(amount < 1000) return false;
-  const px = secMark()*(1 - CFG.SEC_SELL_SPREAD);
-  const proceeds = amount*px, pl = proceeds - amount;
-  post({ securities:-amount, cash:proceeds, retained:pl }, "securities-sell");
+  const lot = S.securities.find(l => l.id === id && l.status === "open");
+  if(!lot) return false;
+  const px = secLotMark(lot)*(1 - CFG.SEC_SELL_SPREAD);
+  const proceeds = lot.bookValue*px, pl = proceeds - lot.bookValue;
+  post({ securities:-lot.bookValue, cash:proceeds, retained:pl }, "securities-sell");
   acc("gainSale", pl);
-  logEvent(`Sold ${fmtMoney(amount)} of securities for ${fmtMoney(proceeds)} — realised ${pl>=0?"gain":"loss"} of ${fmtMoney(Math.abs(pl))}.`,
-           pl >= 0 ? "ok" : "warn");
-  toast("Securities sold", `${fmtMoney(proceeds)} into cash. Reserve ratio now ${pct(M().rr)}.`, pl >= 0 ? "ok" : "warn");
+  lot.status = "sold"; lot.closedDay = S.day; lot.closeWhy = "sold";
+  const wasHTM = lot.classification === "htm";
+  const tainted = wasHTM ? taintHTM() : 0;
+  logEvent(`Sold ${fmtMoney(lot.bookValue)} of ${SEC_TYPE_LABEL[lot.type]} — realised ${pl>=0?"gain":"loss"} of ${fmtMoney(Math.abs(pl))}` +
+    (tainted > 0 ? `. Selling before maturity taints the held-to-maturity book — ${tainted} remaining HTM lot${tainted>1?"s":""} reclassified to available-for-sale.` : "."),
+    tainted > 0 ? "bad" : (pl >= 0 ? "ok" : "warn"));
   bumpAll(); saveGame();
   return true;
+}
+// Forced liquidation for cash: sell AFS first (a clean sale, no side effects),
+// and only break into HTM — tainting the whole book — as the last resort.
+function raiseSecuritiesCash(need, haircut){
+  const open = () => S.securities.filter(l => l.status === "open");
+  let raised = 0;
+  const dump = (lot, tag) => {
+    const px = secLotMark(lot)*(1 - haircut);
+    const proceeds = lot.bookValue*px, pl = proceeds - lot.bookValue;
+    post({ securities:-lot.bookValue, cash:proceeds, retained:pl }, tag);
+    acc("gainSale", pl);
+    lot.status = "sold"; lot.closedDay = S.day; lot.closeWhy = "sold under liquidity pressure";
+    raised += proceeds;
+    if(pl < -500) logEvent(`Sold ${fmtMoney(lot.bookValue)} of ${SEC_TYPE_LABEL[lot.type]} under pressure — ${fmtMoney(-pl)} realised loss.`, "warn");
+  };
+  for(const lot of open().filter(l => l.classification === "afs").sort((a,b) => b.bookValue-a.bookValue)){
+    if(raised >= need) break;
+    dump(lot, "securities-fire-sale-afs");
+  }
+  if(raised < need){
+    const htmLots = open().filter(l => l.classification === "htm").sort((a,b) => b.bookValue-a.bookValue);
+    if(htmLots.length){
+      for(const lot of htmLots){
+        if(raised >= need) break;
+        dump(lot, "securities-fire-sale-htm");
+      }
+      const tainted = taintHTM();
+      if(tainted > 0) logEvent(`Forced to break into held-to-maturity holdings for cash — ${tainted} remaining HTM lot${tainted>1?"s":""} now marked to market.`, "bad");
+    }
+  }
+  return raised;
+}
+function maturitySecurities(){
+  for(const lot of S.securities){
+    if(lot.status !== "open" || S.day < lot.maturity) continue;
+    post({ securities:-lot.bookValue, cash:lot.bookValue }, "securities-maturity");   // pull-to-par: no gain or loss
+    lot.status = "matured"; lot.closedDay = S.day; lot.closeWhy = "matured at par";
+    logEvent(`${fmtMoney(lot.bookValue)} of ${SEC_TYPE_LABEL[lot.type]} matured at par.`, "info");
+  }
+}
+// corporate bonds carry a small default probability of their own, distinct
+// from — and much rarer than — anything in the loan book
+function processSecurityCredit(){
+  const pdMonthly = 1 - Math.pow(1-CFG.SEC_CORP_PD_ANNUAL, 1/12);
+  for(const lot of S.securities){
+    if(lot.status !== "open" || lot.type !== "corporate") continue;
+    if(rnd() < pdMonthly){
+      const loss = lot.bookValue*CFG.SEC_CORP_LGD, recovery = lot.bookValue - loss;
+      post({ securities:-lot.bookValue, cash:recovery, retained:-loss }, "securities-impairment");
+      acc("secImpair", loss);
+      lot.status = "defaulted"; lot.closedDay = S.day; lot.closeWhy = "issuer default";
+      logEvent(`Corporate bond issuer default: ${fmtMoney(lot.bookValue)} lot written down, ${fmtMoney(loss,0)} loss.`, "bad");
+    }
+  }
+}
+function accrueSecuritiesIncome(){
+  for(const lot of S.securities){
+    if(lot.status !== "open") continue;
+    const si = lot.bookValue*lot.couponRate/1200;   // the coupon is fixed at purchase, not today's rate
+    income("intSec", si, { cash:si, retained:si }, "securities-interest");
+  }
 }
 
 function treasuryOps(){
@@ -1946,16 +2068,17 @@ function treasuryOps(){
   // unwind securities if liquidity is getting thin
   if(S.gl.securities > 0 && m.rr < CFG.REQ_RESERVE + 0.03){
     const want = (CFG.REQ_RESERVE + 0.05)*m.funding - m.cash;
-    if(want > 0) ensureCash(m.cash + want);
+    if(want > 0) raiseSecuritiesCash(want, CFG.SECURITIES_HAIRCUT);
   } else if(S.policy.sweep){
     const excess = m.cash - m.funding*S.policy.sweepBuffer;
-    if(excess > 25000) addSecurities(excess);
+    if(excess > 25000){
+      const p = S.policy.sweepProfile;
+      buySecurityLot(excess, p.type, p.duration, p.classification);
+    }
   }
-  if(S.gl.securities > 0){
-    // the coupon is whatever the book was bought at, not today's rate
-    const si = S.gl.securities*(S.gl.secBookYield || secMarketYield())/1200;
-    income("intSec", si, { cash:si, retained:si }, "securities-interest");
-  }
+  accrueSecuritiesIncome();
+  maturitySecurities();
+  processSecurityCredit();
 }
 
 /* ============================= the regulator ============================ */
@@ -3034,8 +3157,11 @@ const LOAN_F = ["id","name","product","tier","score","opened","apr","income","dt
   "fraud","fraudReveal"];
 const DEP_F = ["id","name","kind","balance","apy","maturity","opened","status","beta","drift",
   "closedDay","closeWhy","term"];
+const SEC_F = ["id","type","duration","classification","bookValue","couponRate","opened",
+  "maturity","status","closedDay","closeWhy"];
 const ROUND_TO = { balance:2, apr:2, dti:4, income:0, payment:2, lifeInterest:2, lifeFees:2,
-                   spendRate:4, beta:4, drift:6, apy:3, principal:2, guaranteedPct:4, helocMargin:4 };
+                   spendRate:4, beta:4, drift:6, apy:3, principal:2, guaranteedPct:4, helocMargin:4,
+                   bookValue:2, couponRate:3 };
 function packRows(arr, fields){
   return arr.map(o => fields.map(k => {
     const v = o[k];
@@ -3056,19 +3182,21 @@ const liveLoan = a => !isDead(a);
 function packState(dropDead){
   const loans = dropDead ? S.loans.filter(liveLoan) : S.loans;
   const deps  = dropDead ? S.depAccts.filter(d => d.status === "open") : S.depAccts;
+  const secs  = dropDead ? S.securities.filter(l => l.status === "open") : S.securities;
   return Object.assign({}, S, { _p:1, _dropped: !!dropDead,
-    loans: packRows(loans, LOAN_F), depAccts: packRows(deps, DEP_F) });
+    loans: packRows(loans, LOAN_F), depAccts: packRows(deps, DEP_F), securities: packRows(secs, SEC_F) });
 }
 // Rounding to cents moves the account detail a fraction away from the ledger
 // aggregates; book the difference as a real (tiny) entry rather than let the
 // identity drift.
 function reconcileDetail(){
-  let sl = 0, sd = 0;
+  let sl = 0, sd = 0, ss = 0;
   for(const a of S.loans) if(liveLoan(a)) sl += a.balance;
   for(const d of S.depAccts) if(d.status === "open") sd += d.balance;
-  const dL = sl - S.gl.grossLoans, dD = sd - S.gl.deposits;
-  if(Math.abs(dL) > 1e-9 || Math.abs(dD) > 1e-9)
-    post({ grossLoans:dL, deposits:dD, retained:dL - dD }, "load-rounding");
+  for(const l of S.securities) if(!isDeadSec(l)) ss += l.bookValue;
+  const dL = sl - S.gl.grossLoans, dD = sd - S.gl.deposits, dS = ss - S.gl.securities;
+  if(Math.abs(dL) > 1e-9 || Math.abs(dD) > 1e-9 || Math.abs(dS) > 1e-9)
+    post({ grossLoans:dL, deposits:dD, securities:dS, retained:dL + dS - dD }, "load-rounding");
 }
 let saveWarned = false;
 function saveGame(){
@@ -3097,9 +3225,24 @@ function saveGame(){
 // Saves predate the capital-actions update; fill in anything they lack.
 function migrate(o){
   o.gl.subDebt = o.gl.subDebt || 0;
-  // securities predate the book-yield model: mark them at today's yield, so an
-  // existing holding starts with neither a gain nor a loss
-  if(o.gl.secBookYield == null) o.gl.secBookYield = Math.max(0.2, (o.macro ? o.macro.rate : 4) - 0.5);
+  // securities predate the lot-based HTM/AFS model: the old save has one pooled,
+  // amortised-cost balance, which was always implicitly HTM (a rate move never
+  // touched the balance sheet). Preserve that behavior exactly as a single
+  // legacy HTM lot rather than silently changing a returning player's exposure.
+  if(!o.securities){
+    const legacyBook = (o.gl.securities || 0);
+    if(legacyBook > 0.5){
+      const yld = o.gl.secBookYield != null ? o.gl.secBookYield : Math.max(0.2, (o.macro ? o.macro.rate : 4) - 0.5);
+      const lot = { id: o.nextId || 1, type:"treasury", duration:"medium", classification:"htm",
+                    bookValue: legacyBook, couponRate: yld, opened: o.day || 0,
+                    maturity: (o.day || 0) + CFG.SEC_DURATION_MONTHS.medium*CFG.DAYS_PER_MONTH, status:"open" };
+      o.nextId = (o.nextId || 1) + 1;
+      o.securities = o._p ? packRows([lot], SEC_F) : [lot];
+    } else {
+      o.securities = [];
+    }
+  }
+  delete o.gl.secBookYield;
   o.gl.wholesale = o.gl.wholesale || 0;
   o.gl.interbank = o.gl.interbank || 0;
   if(!o.policy.depositProducts) o.policy.depositProducts = { checking:true, savings:true, cd:true };
@@ -3147,6 +3290,7 @@ function migrate(o){
   if(o.policy.regionTarget == null) o.policy.regionTarget = "";
   if(o.policy.regionBudget == null) o.policy.regionBudget = 0;
   if(o.policy.cdTerm == null) o.policy.cdTerm = 12;
+  if(!o.policy.sweepProfile) o.policy.sweepProfile = { type:"treasury", duration:"short", classification:"afs" };
   if(o.rates){
     const r = defaultRates(o.macro ? o.macro.rate : 4.25);
     for(const p of PRODUCTS) if(!o.rates.loan[p]) o.rates.loan[p] = r.loan[p];
@@ -3169,6 +3313,7 @@ function adoptState(obj){
   if(obj._p){
     obj.loans = unpackRows(obj.loans || [], LOAN_F);
     obj.depAccts = unpackRows(obj.depAccts || [], DEP_F);
+    obj.securities = unpackRows(obj.securities || [], SEC_F);
   }
   S = obj;
   S.speed = 0;                       // always resume paused
@@ -3321,7 +3466,7 @@ function renderOverview(){
   setHTML("ovBS",
     headRow("Assets") +
     row("Cash &amp; reserves", fmtMoney(g.cash)) +
-    (g.securities>0 ? row("Investment securities", fmtMoney(g.securities)) : "") +
+    (m.securities>0 ? row("Investment securities", fmtMoney(m.securities)) : "") +
     row("Loans &amp; cards, gross", fmtMoney(g.grossLoans)) +
     row("Less allowance for losses", "("+fmtMoney(g.allowance)+")", "muted") +
     row("Total assets", fmtMoney(m.assets), "total") +
@@ -3429,9 +3574,11 @@ function renderOverview(){
   else if(m.delinqRate > 0.06) A.push(["warn","▲",`Delinquencies at ${pct(m.delinqRate)} of the book and rising.`]);
   if(m.wholeShare > 0.30)
     A.push(["warn","≡",`Wholesale funding is ${pct(m.wholeShare)} of your funding base. It rolls only while you are well capitalised — a capital breach would pull it exactly when you cannot replace it.`]);
-  const unrealOv = secUnrealized();
-  if(unrealOv < 0 && -unrealOv > 0.10*Math.max(1, m.equity))
-    A.push(["bad","▼",`Your securities book is <b>${fmtMoney(-unrealOv)}</b> underwater — ${pct(-unrealOv/m.equity)} of equity. It is only a paper loss until you need the cash.`]);
+  const htmUnreal = m.secByClass.htm.market - m.secByClass.htm.book;
+  if(htmUnreal < 0 && -htmUnreal > 0.10*Math.max(1, m.equity))
+    A.push(["bad","▼",`Your held-to-maturity securities are <b>${fmtMoney(-htmUnreal)}</b> underwater — ${pct(-htmUnreal/m.equity)} of equity. It doesn't touch the capital ratio unless you sell, and selling any of it taints the whole HTM book to available-for-sale at once.`]);
+  if(m.secAOCI < 0 && -m.secAOCI > 0.05*Math.max(1, m.equity))
+    A.push(["warn","▼",`Available-for-sale securities are marking ${fmtMoney(-m.secAOCI)} underwater — already counted against your capital ratio, live.`]);
   if(S.macro.econ === "recession") A.push(["warn","~",`Recession: default probabilities run at ${CFG.MACRO_PD.recession}× base. Tighten policy or price for it.`]);
   if(S.apps.length >= CFG.QUEUE_CAP*0.6) A.push(["warn","≡",`${S.apps.length} applications waiting. Unreviewed files walk away after ${CFG.APP_TTL} days and cost reputation.`]);
   if(netIncomeOf(S.is.last) < 0 && S.history.length>1) A.push(["warn","−",`The bank lost ${fmtMoney(-netIncomeOf(S.is.last))} last month. Persistent losses erode equity and the capital ratio.`]);
@@ -3900,12 +4047,31 @@ function buildRates(){
     `<div class="rule"></div>` +
     `<label class="switch"><input type="checkbox" data-bind="policy.sweep" data-re="rates" ${p.sweep?"checked":""}>
       Sweep excess cash into investment securities</label>
-     <div class="hint" style="margin-bottom:8px">Securities yield the policy rate less 50bp and carry a ${pct(CFG.RW.securities,0)} risk weight,
-       but they are <i>not</i> cash — sweeping lowers your reserve ratio, and a forced sale in a run costs ${pct(CFG.SECURITIES_HAIRCUT,1)}.</div>` +
+     <div class="hint" style="margin-bottom:8px">Securities are <i>not</i> cash — sweeping lowers your reserve ratio,
+       and a forced sale in a run costs ${pct(CFG.SECURITIES_HAIRCUT,1)} on top of whatever the market has moved
+       against you. Risk weight and rate sensitivity depend on the type and duration bought below.</div>` +
     numRow("Cash buffer to retain (% of deposits)", "policy.sweepBuffer", round2(p.sweepBuffer*100), 1, 11, 90,
       "Anything above this is swept at each month-end.", 0.01) +
+    `<div style="font-size:11px;color:var(--text-2);margin:6px 0 4px">What the sweep buys</div>
+     <div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:8px">
+       <label class="field" style="flex:1;min-width:110px;margin:0"><span>Type</span>
+         <select data-bind="policy.sweepProfile.type" data-str data-re="rates">
+           ${SEC_TYPES.map(t=>`<option value="${t}"${t===p.sweepProfile.type?" selected":""}>${SEC_TYPE_LABEL[t]}</option>`).join("")}
+         </select></label>
+       <label class="field" style="flex:1;min-width:110px;margin:0"><span>Duration</span>
+         <select data-bind="policy.sweepProfile.duration" data-str data-re="rates">
+           ${SEC_DURATIONS.map(d=>`<option value="${d}"${d===p.sweepProfile.duration?" selected":""}>${SEC_DURATION_LABEL[d]}</option>`).join("")}
+         </select></label>
+       <label class="field" style="flex:1;min-width:110px;margin:0"><span>Classification</span>
+         <select data-bind="policy.sweepProfile.classification" data-str data-re="rates">
+           <option value="afs"${p.sweepProfile.classification==="afs"?" selected":""}>AFS</option>
+           <option value="htm"${p.sweepProfile.classification==="htm"?" selected":""}>HTM</option>
+         </select></label>
+     </div>
+     <div class="hint" style="margin-bottom:8px">An automated system choosing HTM for you is a real risk: it can only
+       be unwound later by tainting the whole HTM book. AFS is the safer automatic default.</div>` +
     `<div class="rule"></div>` +
-    row("Securities held", fmtMoney(S.gl.securities,0)) +
+    row("Securities held (carrying value)", fmtMoney(M().securities,0)) +
     row("Unsecured lending headroom", fmtCompact(headroom("personal"))) +
     row("Mortgage lending headroom", fmtCompact(headroom("mortgage"))));
 
@@ -4057,7 +4223,8 @@ function buildMarketing(){
 /* ------------------------------ treasury ------------------------------ */
 const TR = { lineThresh: 30, saleProduct: "card", saleShare: 20,
              wholeTerm: 6, depSaleKind: "savings", depSaleShare: 25,
-             ibTerm: 7, cocoTrigger: CFG.COCO_TRIGGER_DEFAULT*100 };
+             ibTerm: 7, cocoTrigger: CFG.COCO_TRIGGER_DEFAULT*100,
+             secType: "treasury", secDuration: "short", secClass: "afs" };
 
 function buildTreasury(){
   const m = M(), L = limits(false);
@@ -4089,38 +4256,75 @@ function buildTreasury(){
     `<div class="hint">Capital only grows three ways: retained earnings, an equity raise, and Tier 2 notes.
       It shrinks when you lose money, pay a dividend, or add risk-weighted assets.</div>`);
 
-  const mark = secMark(), unreal = secUnrealized();
   const secRoom = Math.max(0, m.cash - L.rr*m.funding);
+  const openLots = S.securities.filter(l => !isDeadSec(l)).sort((a,b) => b.bookValue-a.bookValue);
+  const wAvgYield = m.secBook > 0 ? openLots.reduce((s,l)=>s+l.bookValue*l.couponRate,0)/m.secBook : 0;
+  const htmC = m.secByClass.htm, afsC = m.secByClass.afs;
+
+  let lotsHtml;
+  if(openLots.length){
+    lotsHtml = `<div class="tablewrap"><table class="data"><thead><tr>
+      <th>Type</th><th>Duration</th><th>Class</th><th class="n">Book</th><th class="n">Market</th><th class="n">Yield</th><th>Matures</th><th></th>
+    </tr></thead><tbody>` +
+      openLots.map(l => {
+        const mv = secLotMarketValue(l), gl = mv - l.bookValue;
+        return `<tr>
+          <td>${SEC_TYPE_LABEL[l.type]}</td>
+          <td>${SEC_DURATION_LABEL[l.duration].replace(/\s*\(.*\)/,"")}</td>
+          <td>${l.classification === "htm" ? `<span class="tag cur">HTM</span>` : `<span class="tag d30">AFS</span>`}</td>
+          <td class="n">${fmtMoney(l.bookValue,0)}</td>
+          <td class="n">${l.classification === "afs"
+              ? `<span class="${sign(gl)}">${fmtMoney(mv,0)}</span>`
+              : `<span class="dim">${fmtMoney(mv,0)} <i>(not counted)</i></span>`}</td>
+          <td class="n">${rate(l.couponRate)}</td>
+          <td>${fmtDate(l.maturity)}</td>
+          <td><button class="btn sm" data-sell-lot="${l.id}">Sell</button></td>
+        </tr>`;
+      }).join("") + `</tbody></table></div>`;
+  } else {
+    lotsHtml = `<div class="empty">No securities held.</div>`;
+  }
+
   setHTML("trSecurities",
-    `<div class="hint" style="margin-bottom:9px">Securities pay whatever yield you bought them at, carry a
-      ${pct(CFG.RW.securities,0)} risk weight — and are <b>not cash</b> for the reserve ratio. Buying them converts
-      lending capacity into a coupon; selling them converts it back, at whatever the market will pay today.</div>` +
-    row("Holdings (at cost)", fmtMoney(S.gl.securities,0)) +
-    row("Book yield", S.gl.securities > 0 ? rate(S.gl.secBookYield || secMarketYield()) : "—") +
-    row("Market yield today", rate(secMarketYield())) +
-    row("Mark", (mark*100).toFixed(1) + " per 100", mark < 0.995 ? "bad" : mark > 1.005 ? "good" : "") +
-    row("Unrealised gain / loss", fmtMoney(unreal,0), sign(unreal)) +
-    row("Value if sold now", fmtMoney(S.gl.securities*mark*(1-CFG.SEC_SELL_SPREAD),0)) +
-    (Math.abs(unreal) > 1000
-      ? `<div class="alert ${unreal<0?"warn":"ok"}" style="margin-top:8px"><span class="ic">${unreal<0?"▼":"▲"}</span><span>${
-          unreal < 0
-           ? `Rates have risen since you bought. Selling realises a <b>${fmtMoney(-unreal)}</b> loss — it is a real loss the moment you need the cash.`
-           : `Rates have fallen since you bought, so the book is worth <b>${fmtMoney(unreal)}</b> more than cost.`}</span></div>`
-      : "") +
-    `<div style="display:flex;gap:7px;align-items:flex-end;margin-top:10px">
-      <label class="field" style="flex:1;margin:0"><span>Buy — cash above your ${pct(L.rr,0)} limit: ${fmtCompact(secRoom)}</span>
+    `<div class="hint" style="margin-bottom:9px">Held-to-maturity (HTM) sits at amortised cost — a rate move never
+      touches your capital ratio while you hold it, but selling one early <b>taints the entire remaining HTM book</b>
+      to available-for-sale on the spot. Available-for-sale (AFS) marks to market every month, gains or losses hitting
+      equity immediately, and sells cleanly any time. Neither counts as cash for the reserve ratio.</div>` +
+    row("Total book value (amortised cost)", fmtMoney(m.secBook,0)) +
+    row("Total carrying value (in assets now)", fmtMoney(m.securities,0)) +
+    row("Unrealised AFS gain/loss (in equity now)", fmtMoney(m.secAOCI,0), sign(m.secAOCI)) +
+    row("Held-to-maturity", `${fmtMoney(htmC.book,0)} book · ${fmtMoney(htmC.market,0)} market, not counted · ${htmC.count} lot${htmC.count===1?"":"s"}`) +
+    row("Available-for-sale", `${fmtMoney(afsC.book,0)} book · ${fmtMoney(afsC.market,0)} market, counted · ${afsC.count} lot${afsC.count===1?"":"s"}`) +
+    row("Weighted average yield", rate(wAvgYield)) +
+    row("Risk-weighted assets from securities", fmtMoney(m.secRWA,0)) +
+    `<div class="rule"></div>` + lotsHtml +
+    `<div class="rule"></div><div style="font-size:11px;color:var(--text-2);margin-bottom:5px">Buy a new lot</div>` +
+    `<div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:7px">
+      <label class="field" style="flex:1;min-width:120px;margin:0"><span>Type</span>
+        <select id="trSecType">${SEC_TYPES.map(t=>`<option value="${t}"${t===TR.secType?" selected":""}>${SEC_TYPE_LABEL[t]}</option>`).join("")}</select></label>
+      <label class="field" style="flex:1;min-width:120px;margin:0"><span>Duration</span>
+        <select id="trSecDuration">${SEC_DURATIONS.map(d=>`<option value="${d}"${d===TR.secDuration?" selected":""}>${SEC_DURATION_LABEL[d]}</option>`).join("")}</select></label>
+      <label class="field" style="flex:1;min-width:120px;margin:0"><span>Classification</span>
+        <select id="trSecClass">
+          <option value="afs"${TR.secClass==="afs"?" selected":""}>Available-for-sale</option>
+          <option value="htm"${TR.secClass==="htm"?" selected":""}>Held-to-maturity</option>
+        </select></label>
+    </div>
+    <div class="hint" style="margin-bottom:7px">${rate(secLotMarketYield(TR.secType,TR.secDuration))} yield today ·
+      ${pct(CFG.SEC_RW[TR.secType],0)} risk weight${TR.secType==="corporate" ? ` · ${pct(CFG.SEC_CORP_PD_ANNUAL,1)}/yr default risk of its own` : ""} ·
+      ${TR.secClass==="htm"
+        ? "invisible to your capital ratio unless you sell it early — which taints every other HTM lot to AFS."
+        : "marks to market every month; gains or losses hit equity and the capital ratio immediately."}</div>
+    <div style="display:flex;gap:7px;align-items:flex-end;margin-bottom:10px">
+      <label class="field" style="flex:1;margin:0"><span>Amount — cash above your ${pct(L.rr,0)} limit: ${fmtCompact(secRoom)}</span>
         <input type="number" id="trSecBuy" step="10000" min="0" max="${Math.floor(secRoom)}" value="0"></label>
       <button class="btn" id="btnSecBuy" ${secRoom >= 1000 ? "" : "disabled"}>Buy</button>
-    </div>
-    <div style="display:flex;gap:7px;align-items:flex-end;margin-top:7px">
-      <label class="field" style="flex:1;margin:0"><span>Sell — holdings: ${fmtCompact(S.gl.securities)}</span>
-        <input type="number" id="trSecSell" step="10000" min="0" max="${Math.floor(S.gl.securities)}" value="${Math.floor(S.gl.securities)}"></label>
-      <button class="btn" id="btnSecSell" ${S.gl.securities >= 1000 ? "" : "disabled"}>Sell</button>
     </div>` +
     (S.policy.sweep
-      ? `<div class="hint" style="color:var(--warn);margin-top:8px">The automatic sweep is <b>on</b>: at each month-end
-          any cash above ${pct(S.policy.sweepBuffer,0)} of deposits is bought into securities. Selling now will be
-          undone at the next close unless you switch it off in Rates &amp; Policy.</div>`
+      ? `<div class="hint" style="color:var(--warn)">The automatic sweep is <b>on</b>: at each month-end any cash
+          above ${pct(S.policy.sweepBuffer,0)} of deposits buys ${SEC_TYPE_LABEL[S.policy.sweepProfile.type]}
+          (${SEC_DURATION_LABEL[S.policy.sweepProfile.duration]}, ${S.policy.sweepProfile.classification.toUpperCase()}).
+          Change the profile in Rates &amp; Policy, or switch the sweep off there.</div>`
       : ""));
 
   const wt = wholesaleTerms();
@@ -4434,7 +4638,8 @@ function buildFinancials(){
   setHTML("finBS",
     headRow("Assets") +
     row("Cash and due from the Fed", fmtMoney(g.cash,0)) +
-    row("Investment securities", fmtMoney(g.securities,0)) +
+    row("Investment securities (carrying value)", fmtMoney(m.securities,0)) +
+    (m.secAOCI !== 0 ? row("— of which unrealised AFS gain/loss", fmtMoney(m.secAOCI,0), sign(m.secAOCI), true) : "") +
     row("Loans and cards, gross", fmtMoney(g.grossLoans,0)) +
     row("Credit cards", fmtMoney(m.byProd.card,0), null, true) +
     row("Personal loans", fmtMoney(m.byProd.personal,0), null, true) +
@@ -4455,6 +4660,7 @@ function buildFinancials(){
     headRow("Equity") +
     row("Paid-in capital", fmtMoney(g.paidIn,0)) +
     row("Retained earnings", fmtMoney(g.retained,0), sign(g.retained)) +
+    row("Accumulated other comprehensive income (AFS marks)", fmtMoney(m.secAOCI,0), sign(m.secAOCI)) +
     row("TOTAL EQUITY", fmtMoney(m.equity,0), "total") +
     `<div class="rule"></div>` +
     row("Assets − liabilities − equity", m.identityDrift.toFixed(4),
@@ -4640,7 +4846,8 @@ function buildSettings(){
     headRow("Regulatory minimums") +
     row("Reserve ratio (cash ÷ deposits)", pct(CFG.REQ_RESERVE,0)) +
     row("Capital ratio (equity ÷ RWA)", pct(CFG.REQ_CAPITAL,0)) +
-    row("Risk weights", "cash 0% · secured 50% · unsecured 100% · securities 20%") +
+    row("Loan risk weights", "cash 0% · secured 50% · unsecured 100%") +
+    row("Securities risk weights", "Treasuries 0% · agency/muni 20% · corporate 50%") +
     row("Card undrawn conversion factor", pct(CFG.CCF_CARD,0)) +
     headRow("Annual default probability by tier") +
     TIERS.map(t=>row(`${t} · ${TIER_LABEL[t]} <span class="dim">${TIER_NAME[t]}</span>`, pct(CFG.PD[t],2), null, true)).join("") +
@@ -4957,14 +5164,28 @@ function wire(){
       buildTreasury();
       return;
     }
-    if(id === "btnSecBuy" || id === "btnSecSell"){
-      if(S.over) return;
-      if(id === "btnSecBuy") buySecurities(+$("trSecBuy").value);
-      else {
-        const amt = +$("trSecSell").value, u = secUnrealized(), mk = secMark();
-        const pl = amt*(mk*(1-CFG.SEC_SELL_SPREAD) - 1);
-        if(confirm(`Sell ${fmtMoney(amt)} of securities? That realises a ${pl>=0?"gain":"loss"} of ${fmtMoney(Math.abs(pl))} and moves the proceeds into cash.`))
-          sellSecurities(amt);
+    if(id === "btnSecBuy"){
+      if(!S.over) buySecurityLot(+$("trSecBuy").value, TR.secType, TR.secDuration, TR.secClass);
+      buildTreasury();
+      return;
+    }
+    const sellLotBtn = e.target.closest("button[data-sell-lot]");
+    if(sellLotBtn && !S.over){
+      const lotId = +sellLotBtn.dataset.sellLot;
+      const lot = S.securities.find(l => l.id === lotId && l.status === "open");
+      if(lot){
+        const px = secLotMark(lot)*(1 - CFG.SEC_SELL_SPREAD);
+        const pl = lot.bookValue*px - lot.bookValue;
+        let msg = `Sell ${fmtMoney(lot.bookValue)} of ${SEC_TYPE_LABEL[lot.type]}? That realises a ${pl>=0?"gain":"loss"} of ${fmtMoney(Math.abs(pl))}.`;
+        if(lot.classification === "htm"){
+          const remaining = S.securities.filter(l => l.status==="open" && l.classification==="htm" && l.id!==lot.id)
+                                         .reduce((s,l)=>s+l.bookValue, 0);
+          msg = `Selling this held-to-maturity bond realises a ${fmtMoney(Math.abs(pl))} ${pl>=0?"gain":"loss"}` +
+                (remaining > 0
+                  ? ` and reclassifies your remaining ${fmtMoney(remaining,0)} in held-to-maturity holdings as available-for-sale — proceed?`
+                  : ` — proceed?`);
+        }
+        if(confirm(msg)) sellSecurityLot(lotId);
       }
       buildTreasury();
       return;
@@ -5035,6 +5256,9 @@ function wire(){
     if(e.target.id === "trIbTerm"){ TR.ibTerm = +e.target.value; buildTreasury(); return; }
     if(e.target.id === "trDepKind"){ TR.depSaleKind = e.target.value; buildTreasury(); return; }
     if(e.target.id === "trDepShare"){ TR.depSaleShare = +e.target.value; buildTreasury(); return; }
+    if(e.target.id === "trSecType"){ TR.secType = e.target.value; buildTreasury(); return; }
+    if(e.target.id === "trSecDuration"){ TR.secDuration = e.target.value; buildTreasury(); return; }
+    if(e.target.id === "trSecClass"){ TR.secClass = e.target.value; buildTreasury(); return; }
     if(e.target.id === "setPauseBlur"){ S.pauseOnBlur = e.target.checked; saveGame(); }
     if(e.target.id === "setReprice"){
       S.macro.repriceMonths = +e.target.value;

@@ -488,7 +488,8 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
       </div>
       <div class="card" style="margin-bottom:12px">
         <h3><span>Loan &amp; card rate sheet (APR by credit tier)</span><span class="dim" id="rsMktLoan"></span></h3>
-        <div class="body"><div class="tablewrap"><table class="rates" id="rsGrid"></table></div>
+        <div class="body"><div id="rsLoanPresets" style="margin-bottom:9px"></div>
+          <div class="tablewrap"><table class="rates" id="rsGrid"></table></div>
           <div class="hint" style="margin-top:7px">Grey figures are the prevailing market APR. Pricing above market lowers offer take-up and erodes reputation; pricing below market wins volume but thins the spread.</div>
         </div>
       </div>
@@ -3985,9 +3986,48 @@ function numRow(label, path, value, step, lo, hi, hint, scale, re){
 }
 
 /* --------------------------- rates & policy --------------------------- */
+// One-click rate-sheet presets — re-derived off today's market rate every
+// time, so re-applying after a rate move is the whole point, not a snapshot
+// that goes stale. Loans and deposits move opposite directions on purpose:
+// aggressive wins volume (cheap loans, rich deposits, thin spread), lean
+// maximises spread (expensive loans, cheap deposits, less volume), passive
+// just matches the market.
+const RATE_PRESETS = {
+  aggressive: { loanOffset:-1.00, depOffset: 0.40 },
+  passive:    { loanOffset: 0,    depOffset: 0    },
+  lean:       { loanOffset: 1.50, depOffset:-0.40 },
+};
+const RATE_PRESET_LABEL = { aggressive:"Aggressive", passive:"Passive", lean:"Lean" };
+function applyLoanRatePreset(key){
+  const off = RATE_PRESETS[key]; if(!off) return;
+  for(const p of PRODUCTS) for(const t of TIERS)
+    S.rates.loan[p][t] = round2(clamp(marketAPR(p,t) + off.loanOffset, 0.5, 45));
+  logEvent(`Loan and card rate sheet auto-set to ${RATE_PRESET_LABEL[key].toLowerCase()} (${off.loanOffset>=0?"+":""}${off.loanOffset.toFixed(2)}pt vs market, every tier).`, "info");
+  DIRTY.kpi = true; DIRTY.overview = true;
+  buildRates(); saveGame();
+}
+function applyDepositRatePreset(key){
+  const off = RATE_PRESETS[key]; if(!off) return;
+  for(const k of ["checking","savings","cd"])
+    S.rates.dep[k] = round2(clamp(marketDepAPY(k) + off.depOffset, 0, 12));
+  logEvent(`Deposit rate sheet auto-set to ${RATE_PRESET_LABEL[key].toLowerCase()} (${off.depOffset>=0?"+":""}${off.depOffset.toFixed(2)}pt vs market, every product).`, "info");
+  DIRTY.kpi = true; DIRTY.overview = true;
+  buildRates(); saveGame();
+}
+function presetButtons(scope){
+  return `<div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center">
+      <span style="font-size:11px;color:var(--text-2)">Auto-set to:</span>
+      ${["aggressive","passive","lean"].map(k =>
+        `<button class="btn sm" data-rate-preset="${scope}:${k}">${RATE_PRESET_LABEL[k]}</button>`).join("")}
+    </div>`;
+}
+
 function buildRates(){
   const d = S.rates.dep;
   setHTML("rsDeposits",
+    presetButtons("dep") +
+    `<div class="hint" style="margin:5px 0 9px">Aggressive pays ${rate(Math.abs(RATE_PRESETS.aggressive.depOffset))} over market to gather deposits fast;
+      passive matches market; lean pays ${rate(Math.abs(RATE_PRESETS.lean.depOffset))} under market for cheaper funding. Re-applies off today's market rate.</div>` +
     numRow("Checking APY %", "rates.dep.checking", d.checking, 0.05, 0, 12,
       `Market ${rate(marketDepAPY("checking"))}. Cheap, sticky funding — but small balances.`) +
     numRow("Savings APY %", "rates.dep.savings", d.savings, 0.05, 0, 12,
@@ -4023,6 +4063,10 @@ function buildRates(){
         value="${S.rates.loan[p][t]}"><div class="mkt" data-mkt="${p}.${t}">${rate(marketAPR(p,t))}</div></td>`).join("") + `</tr>`;
   }
   setHTML("rsGrid", g + "</tbody>");
+  setHTML("rsLoanPresets",
+    presetButtons("loan") +
+    `<div class="hint" style="margin-top:5px">Aggressive prices ${rate(Math.abs(RATE_PRESETS.aggressive.loanOffset))} under market on every product and tier to win volume;
+      passive matches market; lean prices ${rate(Math.abs(RATE_PRESETS.lean.loanOffset))} over market for spread. Re-applies off today's market rate — safe to hit again after every rate reset.</div>`);
 
   const p = S.policy;
   setHTML("rsPolicy",
@@ -5133,6 +5177,12 @@ function wire(){
     }
   });
   main.addEventListener("click", e => {
+    const presetBtn = e.target.closest("button[data-rate-preset]");
+    if(presetBtn){
+      const [scope, key] = presetBtn.dataset.ratePreset.split(":");
+      if(scope === "loan") applyLoanRatePreset(key); else applyDepositRatePreset(key);
+      return;
+    }
     const repayBtn = e.target.closest("button[data-repay]");
     if(repayBtn && !S.over){
       const i = +repayBtn.dataset.repay, w = S.capital.wholesale[i];

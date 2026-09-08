@@ -382,6 +382,8 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
     <button data-tab="portfolio">Portfolio</button>
     <button data-tab="rates">Rates &amp; Policy</button>
     <button data-tab="marketing">Marketing</button>
+    <button data-tab="branches">Branches</button>
+    <button data-tab="departments">Departments</button>
     <button data-tab="treasury">Treasury</button>
     <button data-tab="financials">Financials</button>
     <button data-tab="settings">Settings</button>
@@ -529,15 +531,50 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
         <h3>Reputation drivers</h3>
         <div class="body" id="mkRep"></div>
       </div>
-      <div class="grid g2">
-        <div class="card">
-          <h3>Fraud &amp; compliance</h3>
-          <div class="body" id="mkFraud"></div>
-        </div>
+      <div class="grid">
         <div class="card">
           <h3>Regional targeting</h3>
           <div class="body" id="mkRegion"></div>
         </div>
+      </div>
+    </section>
+
+    <!-- ============ BRANCHES ============ -->
+    <section class="tabpanel" data-panel="branches">
+      <div class="grid" style="margin-bottom:12px">
+        <div class="card" id="brHQCard"><div class="body" id="brHQ"></div></div>
+      </div>
+      <div class="card" style="margin-bottom:12px">
+        <h3>Regional coverage</h3>
+        <div class="body" id="brGaps"></div>
+      </div>
+      <div class="card" style="margin-bottom:12px">
+        <div class="toolbar">
+          <select id="brRegionFilter"><option value="">All regions</option></select>
+          <select id="brSort">
+            <option value="region">Sort: region</option>
+            <option value="deposits">Sort: deposits gathered</option>
+            <option value="loans">Sort: loans originated</option>
+            <option value="customers">Sort: customers originated</option>
+            <option value="overhead">Sort: overhead</option>
+          </select>
+          <span style="margin-left:auto" class="dim" id="brCount"></span>
+        </div>
+        <div class="tablewrap"><table class="data"><thead id="brHead"></thead><tbody id="brBody"></tbody></table></div>
+      </div>
+      <div class="card">
+        <h3>Open a branch</h3>
+        <div class="body" id="brOpenRow"></div>
+      </div>
+    </section>
+
+    <!-- ============ DEPARTMENTS ============ -->
+    <section class="tabpanel" data-panel="departments">
+      <div class="grid g2">
+        <div class="card"><h3>Underwriting</h3><div class="body" id="dpUW"></div></div>
+        <div class="card"><h3>Fraud &amp; compliance</h3><div class="body" id="dpFraud"></div></div>
+        <div class="card"><h3>Customer service</h3><div class="body" id="dpService"></div></div>
+        <div class="card"><h3>QA (operational risk)</h3><div class="body" id="dpQA"></div></div>
       </div>
     </section>
 
@@ -722,18 +759,21 @@ const CFG = {
   // risk weights for the capital ratio (securities have their own map — SEC_RW — since
   // risk weight depends on issuer type, independent of HTM/AFS accounting treatment)
   RW: { cash:0, mortgage:0.50, auto:0.50, personal:1.00, card:1.00,
-        heloc:0.50, studentloan:1.00, sbloan:1.00, securedcard:0.00 },
+        heloc:0.50, studentloan:1.00, sbloan:1.00, securedcard:0.00,
+        bnpl:1.00, bnplplus:1.00 },
   CCF_CARD: 0.50,            // credit-conversion factor on undrawn revolving lines (card/HELOC/secured card)
   CARD_CASH_DRAW: 0.25,      // liquidity assumed drawn at card-like origination
 
   // loss given default
   LGD: { mortgage:0.25, auto:0.45, personal:0.85, card:0.90,
-         heloc:0.35, studentloan:0.75, sbloan:0.65, securedcard:0.05 },
+         heloc:0.35, studentloan:0.75, sbloan:0.65, securedcard:0.05,
+         bnpl:0.90, bnplplus:0.85 },
 
   // annualised probability of default by credit tier (base case)
   PD: { A:0.003, B:0.008, C:0.020, D:0.060, E:0.150 },
   PD_PRODUCT: { mortgage:0.55, auto:0.80, personal:1.15, card:1.30,
-                heloc:0.65, studentloan:0.70, sbloan:1.20, securedcard:1.00 },
+                heloc:0.65, studentloan:0.70, sbloan:1.20, securedcard:1.00,
+                bnpl:1.60, bnplplus:1.20 },
   MACRO_PD: { recession:2.5, normal:1.0, boom:0.6 },
   CURE: { secured:0.34, unsecured:0.26 },   // monthly probability a delinquent account cures
   CHARGEOFF_AT: 4,           // missed payments before charge-off (120 DPD)
@@ -748,8 +788,43 @@ const CFG = {
   ARRIVE_BASE: 2.6,          // applicants/day at reputation 50, no marketing, de novo scale
   QUEUE_CAP: 60,
   APP_TTL: 14,               // days before an unreviewed application walks away
-  MIX: { deposit:0.40, card:0.16, personal:0.10, auto:0.09, mortgage:0.06,
-         heloc:0.05, studentloan:0.05, sbloan:0.04, securedcard:0.05 },
+  MIX: { deposit:0.36, card:0.14, personal:0.09, auto:0.08, mortgage:0.05,
+         heloc:0.04, studentloan:0.04, sbloan:0.03, securedcard:0.04,
+         bnpl:0.09, bnplplus:0.04 },
+
+  // --- BNPL: point-of-sale installment credit, not a bank application -------
+  BNPL_LATE_FEE: 8,               // small, regulated-scale late fee
+  BNPL_MERCHANT_FEE: 0.055,       // merchant discount, well above card interchange — BNPL lifts conversion
+  BNPL_PHANTOM_DEBT_MULT: { bnpl:1.45, bnplplus:1.15 },  // debt invisible to DTI elsewhere in the market
+  BNPL_TERM_MONTHS: 2,            // approximates "4 installments over ~6 weeks" at the engine's monthly resolution
+
+  // --- debit interchange: scales with checking-account spend activity -------
+  DEBIT_TURNOVER: 0.9,            // monthly debit spend as a share of checking balance
+  DEBIT_INTERCHANGE_RATE: 0.0022, // ~0.22% — real debit interchange, well under credit's ~1.5%
+
+  // --- relationship cross-sell ------------------------------------------
+  CROSS_SELL_CHANCE: 0.16,        // share of new applications that are an existing customer, not a stranger
+  CROSS_SELL_SCORE_BOOST: 30,     // effective score bump applied only to underwriting *thresholds*
+  CROSS_SELL_RATE_DISCOUNT: 0.35, // pt off the tier APR for an existing relationship
+  CROSS_SELL_CHURN_MULT: 0.6,     // multi-product customers churn at 60% of the single-product rate
+
+  // --- branch network ------------------------------------------------------
+  HQ_REGION: "Northside",
+  BRANCH_BASE_COST: 250000, BRANCH_COST_STEP: 0.6,          // +60% cost per existing branch in that region
+  BRANCH_BASE_OVERHEAD: 6000, BRANCH_OVERHEAD_STEP: 0.4,
+  BRANCH_MAX_PER_REGION: 3,
+  NO_BRANCH_REGION_WEIGHT: 0.18,  // applicant/deposit weight a branchless region still gets (indirect/online reach)
+  PER_BRANCH_WEIGHT: 0.35,        // added regional weight per branch there, before diminishing-returns clamp
+  BRANCH_REGION_WEIGHT_MAX: 1.3,
+
+  // --- departments: budget -> effectiveness follows the same diminishing-
+  // returns curve fraud & compliance already used (effectiveness = spend/(spend+half)) ---
+  DEPT_HALF: { underwriting:6000, fraud:6000, service:5000, qa:5000 },
+  UW_BASE_CAPACITY: 3, UW_MAX_CAPACITY_ADD: 14,   // reviewable apps/day, zero spend -> fully staffed
+  OP_ERROR_BASE_CHANCE: 0.05,      // monthly chance of an operational-error event at zero QA spend
+  OP_ERROR_QA_REDUCTION: 0.85,     // max share of that chance a fully-staffed QA function removes
+  OP_ERROR_COST_MIN: 1500, OP_ERROR_COST_ASSET_BPS: 0.00006,
+  OP_ERROR_REP_HIT: 3,
 
   // deposits
   KYC_THRESHOLD: 250000,     // deposits above this get a compliance review
@@ -818,23 +893,32 @@ const TIERS = ["A","B","C","D","E"];
 const TIER_MIN = { A:800, B:740, C:670, D:580, E:300 };
 const TIER_LABEL = { A:"800+", B:"740–799", C:"670–739", D:"580–669", E:"below 580" };
 const TIER_NAME = { A:"Super-prime", B:"Prime", C:"Near-prime", D:"Subprime", E:"Deep subprime" };
-const PRODUCTS = ["card","personal","auto","mortgage","heloc","studentloan","sbloan","securedcard"];
+const PRODUCTS = ["card","personal","auto","mortgage","heloc","studentloan","sbloan","securedcard","bnpl","bnplplus"];
 const PRODUCT_LABEL = { card:"Credit card", personal:"Personal loan", auto:"Auto loan",
                         mortgage:"Mortgage", heloc:"HELOC", studentloan:"Student loan",
-                        sbloan:"Small-business loan", securedcard:"Secured card", deposit:"Deposit account" };
+                        sbloan:"Small-business loan", securedcard:"Secured card",
+                        bnpl:"BNPL (Pay in 4)", bnplplus:"BNPL installment", deposit:"Deposit account" };
 // revolving lines carry an undrawn-line RWA add-on like a card, instead of a fixed installment schedule
 const REVOLVING = { card:true, heloc:true, securedcard:true };
 const SECURED = { mortgage:true, auto:true, personal:false, card:false,
-                   heloc:true, studentloan:false, sbloan:false, securedcard:true };
+                   heloc:true, studentloan:false, sbloan:false, securedcard:true,
+                   bnpl:false, bnplplus:false };
+// BNPL ("Pay in 4") carries no player-set APR — it's always 0% to the customer,
+// revenue comes from the merchant discount fee instead — so it's excluded from
+// every player-facing rate-vs-market comparison, unlike its bnplplus sibling
+const RATE_FIXED = { bnpl:true };
 const TERMS = { personal:[24,36,48,60], auto:[48,60,72], mortgage:[360],
-                studentloan:CFG.STUDENT_TERMS, sbloan:CFG.SB_TERMS };
+                studentloan:CFG.STUDENT_TERMS, sbloan:CFG.SB_TERMS,
+                bnpl:[CFG.BNPL_TERM_MONTHS], bnplplus:[6,12,18,24] };
 const REGIONS = ["Northside","Riverfront","Old Mill","Eastgate","Lakeview","Highland"];
 const SEC_TYPES = ["treasury","agency","muni","corporate"];
 const SEC_TYPE_LABEL = { treasury:"Treasuries", agency:"Agency MBS", muni:"Municipal bonds", corporate:"Corporate bonds" };
 const SEC_DURATIONS = ["short","medium","long"];
 const SEC_DURATION_LABEL = { short:"Short (~1–2yr)", medium:"Medium (~5–7yr)", long:"Long (~10–30yr)" };
 
-// spread over the market policy rate used to derive the prevailing market APR
+// spread over the market policy rate used to derive the prevailing market APR.
+// BNPL's spread is never actually charged (its APR is fixed at 0%) — it exists
+// only as the comparison yardstick behind take-up/pricing formulas.
 const MKT_SPREAD = {
   card:     { A:8.0, B:10.0, C:13.0, D:17.0, E:21.0 },
   personal: { A:3.0, B:5.0,  C:8.0,  D:13.0, E:18.0 },
@@ -844,6 +928,8 @@ const MKT_SPREAD = {
   studentloan:{ A:1.5, B:2.5,  C:4.0,  D:6.0,  E:9.0  },
   sbloan:     { A:2.5, B:4.0,  C:6.5,  D:10.0, E:14.0 },
   securedcard:{ A:5.0, B:5.0,  C:5.0,  D:5.0,  E:5.0  },
+  bnpl:       { A:8.0, B:10.0, C:13.0, D:17.0, E:21.0 },
+  bnplplus:   { A:4.0, B:6.0,  C:9.0,  D:13.0, E:18.0 },
 };
 const DEP_MKT_MULT = { checking:0.08, savings:0.55, cd:0.80 };  // of the market policy rate
 
@@ -856,7 +942,7 @@ const CHARTERS = {
     wealthUnlocked:false, wealthUnlockAssets:500_000_000,
     auditMult:1.0, craRelief:0, grantIncome:0, milestones:null,
     startProducts:{ card:true, personal:true, auto:true, mortgage:true,
-                     heloc:true, studentloan:true, sbloan:false, securedcard:true },
+                     heloc:true, studentloan:true, sbloan:false, securedcard:true, bnpl:true, bnplplus:true },
     note:"Modest capital, loyal local depositors who rarely run — but the deposit base grows slowly and has a lower ceiling. No wealth management or large commercial lending until the bank has grown into real scale." },
   aggressive: { key:"aggressive", name:"Aggressive Growth (De novo)",
     capital:8_000_000, deposits:2_000_000, rep:50,
@@ -865,7 +951,7 @@ const CHARTERS = {
     auditMult:1.0, craRelief:0, grantIncome:0,
     milestones:[ {day:360, minAssets:20_000_000}, {day:720, minAssets:55_000_000}, {day:1080, minAssets:120_000_000} ],
     startProducts:{ card:true, personal:true, auto:true, mortgage:true,
-                     heloc:true, studentloan:true, sbloan:true, securedcard:true },
+                     heloc:true, studentloan:true, sbloan:true, securedcard:true, bnpl:true, bnplplus:true },
     note:"Venture-backed capital and marketing that hits twice as hard — but investors set deposit/asset milestones. Miss one and they pull funding." },
   private: { key:"private", name:"Private / Wealth Bank",
     capital:12_000_000, deposits:4_000_000, rep:60,
@@ -875,7 +961,7 @@ const CHARTERS = {
     arriveMult:0.16, sizeMult:6.0,
     maxAmount:{ card:80000, mortgage:3_000_000, heloc:450_000, sbloan:1_500_000 },
     startProducts:{ card:true, personal:false, auto:false, mortgage:true,
-                     heloc:true, studentloan:false, sbloan:true, securedcard:false },
+                     heloc:true, studentloan:false, sbloan:true, securedcard:false, bnpl:false, bnplplus:true },
     note:"Far fewer, far wealthier clients — high average balances, wealth-management advisory fees from day one. Compliance scrutiny and audit frequency are visibly stricter." },
   cdfi: { key:"cdfi", name:"Community Development Bank",
     capital:2_000_000, deposits:1_000_000, rep:48,
@@ -883,7 +969,7 @@ const CHARTERS = {
     wealthUnlocked:false, wealthUnlockAssets:Infinity,
     auditMult:1.0, craRelief:0.02, grantIncome:3500, milestones:null,
     startProducts:{ card:true, personal:true, auto:true, mortgage:false,
-                     heloc:false, studentloan:true, sbloan:true, securedcard:true },
+                     heloc:false, studentloan:true, sbloan:true, securedcard:true, bnpl:true, bnplplus:false },
     startPolicy:{ minScore:560, autoApprove:680, autoDecline:560, maxDTI:0.48 },
     note:"Leans into secured cards and credit-building from day one, serving a riskier pool by design — offset by CRA-style capital relief and steady grant income. Hard mode with a subsidy." },
 };
@@ -967,8 +1053,8 @@ let S = null;
 let LEDGER_ERRORS = [];
 
 const IS_LINES = ["intLoans","intSec","intDep","intSub","intWhole","intInterbank","provision","feeOrig","feeLate","feeAnnual",
-                  "feeInterchange","feeService","gainSale","feeWealth","grantIncome","opex","marketing","fraudLoss","compliance",
-                  "secImpair","tax"];
+                  "feeInterchange","feeDebit","feeMerchant","feeService","gainSale","feeWealth","grantIncome","opex","marketing",
+                  "branchOpex","deptUW","deptService","deptQA","opLoss","fraudLoss","compliance","secImpair","tax"];
 function blankIS(){ const o={}; for(const k of IS_LINES) o[k]=0; return o; }
 function blankCapital(){
   return { tranches: [], wholesale: [], cocos: [], interbank: [], lastRaise: -9999, raises: 0, raised: 0, raiseFees: 0,
@@ -978,9 +1064,10 @@ function blankCapital(){
 }
 function netIncomeOf(is){
   return is.intLoans + is.intSec - is.intDep - is.intSub - is.intWhole - is.intInterbank - is.provision
-       + is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService + is.gainSale
+       + is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeDebit + is.feeMerchant + is.feeService + is.gainSale
        + is.feeWealth + is.grantIncome
-       - is.opex - is.marketing - is.fraudLoss - is.compliance - is.secImpair - is.tax;
+       - is.opex - is.marketing - is.branchOpex - is.deptUW - is.deptService - is.deptQA - is.opLoss
+       - is.fraudLoss - is.compliance - is.secImpair - is.tax;
 }
 function preTaxOf(is){ return netIncomeOf(is) + is.tax; }
 
@@ -1023,7 +1110,8 @@ function newGame(bankName, charterKey){
       depositProducts: { checking:true, savings:true, cd:true },
       targetReserve: 0.16, targetCapital: 0.11,   // internal limits, above the regulatory floors
       maxAmount: Object.assign({ card:25000, personal:40000, auto:60000, mortgage:500000,
-                   heloc:75000, studentloan:80000, sbloan:250000, securedcard:5000 }, ch.maxAmount||{}),
+                   heloc:75000, studentloan:80000, sbloan:250000, securedcard:5000,
+                   bnpl:600, bnplplus:6000 }, ch.maxAmount||{}),
       sweep: false, sweepBuffer: 0.18,
       sweepProfile: { type:"treasury", duration:"short", classification:"afs" },
       apyEmergency: 0,
@@ -1031,10 +1119,15 @@ function newGame(bankName, charterKey){
       studentloan: { minHistoryMonths:24, thinFileMinScore:580, maxDTI:0.45 },
       sbloan: { minDSCR:1.25, guaranteedPct:0 },
       securedcard: { minCollateral:200 },
-      fcSpend: 0,                    // fraud & compliance investment — 0 is a valid playstyle
       regionTarget: "", regionBudget: 0,
       cdTerm: 12,
     },
+    // unified department budgeting — fraud & compliance lives here now, not as
+    // a standalone policy slider; every department follows the same
+    // diminishing-returns spend->effectiveness curve
+    departments: { underwriting:{budget:0}, fraud:{budget:0}, service:{budget:0}, qa:{budget:0} },
+    branches: [],            // supporting branches only — HQ is implicit, not in this array
+    custIndex: {},           // custId -> { count, name, score, income, region, tier } — drives cross-sell
     marketing: { budget: 0, mix: { brand:1, deposit:1, lending:1 } },
     macro: { rate: marketRate, econ: "normal", econMonths: 0,
              repriceMonths: CFG.RATE_REPRICE_MONTHS, monthsSinceReprice: 0 },
@@ -1053,7 +1146,8 @@ function newGame(bankName, charterKey){
              appsExpired:0, offersDeclined:0, chargeOffs:0, chargeOffAmt:0,
              peakAssets:0, peakEquity:0, lifetimeInterest:0, monthApproved:0, monthDecided:0,
              everBailedOut: false, fraudLossAmt:0, fraudLossCount:0, complianceAudits:0,
-             complianceFines:0, grantReceived:0 },
+             complianceFines:0, grantReceived:0, autoDecidedApps:0, opErrorCount:0, opErrorCost:0,
+             crossSellBooked:0 },
     log: [], decisions: [],
   };
   LEDGER_ERRORS = [];
@@ -1073,7 +1167,9 @@ function seedDeposits(total){
     if(remaining - amt < 500) amt = remaining;
     amt = Math.max(250, Math.round(amt));
     remaining -= amt;
-    S.depAccts.push(makeDepositAccount(randomName(), kind, amt, true));
+    const name = randomName(), region = pick(REGIONS), custId = S.nextId++;
+    S.depAccts.push(makeDepositAccount(name, kind, amt, true, null, region, custId));
+    registerCustomerProduct(custId, { name, score:680, income:60000, region, tier:"C" });
   }
   // seeding must not disturb the ledger: gl.deposits already holds the total
   const sum = S.depAccts.reduce((a,x)=>a+x.balance,0);
@@ -1081,10 +1177,10 @@ function seedDeposits(total){
   if(Math.abs(drift) > 0.005 && S.depAccts.length) S.depAccts[0].balance += drift;
 }
 
-function makeDepositAccount(name, kind, balance, seeded, term){
+function makeDepositAccount(name, kind, balance, seeded, term, region, custId){
   const cdTerm = kind==="cd" ? (term || pick(CFG.CD_TERMS)) : null;
   return {
-    id: S.nextId++, name, kind, balance,
+    id: S.nextId++, name, kind, balance, region: region||null, custId: custId||null,
     term: cdTerm,
     apy: kind==="cd" ? cdTermAPY(cdTerm) : null,     // CDs lock their rate at origination
     maturity: kind==="cd" ? S.day + cdTerm*CFG.DAYS_PER_MONTH : null,
@@ -1093,6 +1189,24 @@ function makeDepositAccount(name, kind, balance, seeded, term){
     beta: clamp(0.35 + 0.5*rnd(), 0.2, 0.95),      // rate sensitivity
     drift: 0.004*randn() + (kind==="checking" ? 0.001 : 0.004), // organic monthly growth
   };
+}
+// customer relationship registry: how many open products a person holds —
+// drives both the cross-sell pool and the multi-product churn discount
+function registerCustomerProduct(custId, profile){
+  if(custId == null) return;
+  // the cached profile must carry its own id — it's handed back whole by
+  // rollCrossSellProfile(), and without this a "cross-sell" booking would
+  // mint a fresh custId instead of reusing the real one, silently breaking
+  // the multi-product relationship tracking while the discount still applied
+  if(!S.custIndex[custId]) S.custIndex[custId] = Object.assign({ count:0 }, profile, { custId });
+  S.custIndex[custId].count++;
+}
+function unregisterCustomerProduct(custId){
+  if(custId == null) return;
+  const c = S.custIndex[custId];
+  if(!c) return;
+  c.count--;
+  if(c.count <= 0) delete S.custIndex[custId];
 }
 
 /* --- the one place the balance sheet is allowed to move ----------------- */
@@ -1124,7 +1238,8 @@ function M(){
   if(_mCacheV === _mv && _mCache && _mCacheRate === S.macro.rate) return _mCache;
   const g = S.gl;
   let rwaCredit = 0, cardUndrawn = 0, gross = 0, delinq = 0, npl = 0, active = 0, projInt = 0;
-  const byProd = { card:0, personal:0, auto:0, mortgage:0, heloc:0, studentloan:0, sbloan:0, securedcard:0 };
+  const byProd = { card:0, personal:0, auto:0, mortgage:0, heloc:0, studentloan:0, sbloan:0, securedcard:0,
+                    bnpl:0, bnplplus:0 };
   let expLoss = 0;
   for(let i=0;i<S.loans.length;i++){
     const a = S.loans[i];
@@ -1228,7 +1343,13 @@ function pdAnnual(a){
   const season = ageM < 4 ? 0.55 + 0.11*ageM : ageM > 48 ? 0.75 : 1.0;
   const layoff = S.events.layoff;
   const regionAdj = (layoff && S.day < layoff.until && a.region === layoff.region) ? CFG.EVT_LAYOFF_PD_MULT : 1;
-  return clamp(base*dtiAdj*season*regionAdj, 0.0005, 0.85);
+  // BNPL isn't reported to credit bureaus, so a customer can be carrying
+  // several balances across lenders that never show up in anyone's DTI —
+  // "phantom debt" the score alone understates. Modeled as a flat multiplier
+  // on top of the already-elevated PD_PRODUCT baseline, not folded into it,
+  // so it's visible as its own distinct risk rather than just a bigger PD_PRODUCT.
+  const phantomAdj = CFG.BNPL_PHANTOM_DEBT_MULT[a.product] || 1;
+  return clamp(base*dtiAdj*season*regionAdj*phantomAdj, 0.0005, 0.85);
 }
 function sizeTier(assets){ for(const [cap,label] of SIZE_TIERS) if(assets<cap) return label; return "money-center"; }
 function marketDepAPY(kind){ return S.macro.rate * DEP_MKT_MULT[kind]; }
@@ -1297,13 +1418,96 @@ function productMix(){
   return mix;
 }
 
+/* ============================== branches ================================
+   HQ is implicit (always present, in CFG.HQ_REGION, never costs anything and
+   can't close). Every other region starts with no branch at all — applicants
+   and deposits still trickle in from there (marketing, online, word of mouth),
+   just at a fraction of what a real branch presence brings.
+   ===================================================================== */
+function branchCountIn(region){
+  if(region === CFG.HQ_REGION) return 1;   // HQ counts as this region's first "branch" for weighting
+  return S.branches.filter(b => b.region === region).length;
+}
+function regionWeight(region){
+  const n = branchCountIn(region);
+  if(n === 0) return CFG.NO_BRANCH_REGION_WEIGHT;
+  return Math.min(CFG.BRANCH_REGION_WEIGHT_MAX, 1 + (n-1)*CFG.PER_BRANCH_WEIGHT);
+}
+function branchCost(region){
+  const existing = S.branches.filter(b => b.region === region).length;
+  return Math.round(CFG.BRANCH_BASE_COST * Math.pow(1+CFG.BRANCH_COST_STEP, existing));
+}
+function branchOverhead(region){
+  const existing = S.branches.filter(b => b.region === region).length;
+  return Math.round(CFG.BRANCH_BASE_OVERHEAD * Math.pow(1+CFG.BRANCH_OVERHEAD_STEP, Math.max(0,existing-1)));
+}
+function openBranch(region){
+  if(S.over || region === CFG.HQ_REGION) return false;
+  const existing = S.branches.filter(b => b.region === region).length;
+  if(existing >= CFG.BRANCH_MAX_PER_REGION) return false;
+  const cost = branchCost(region);
+  if(!ensureCash(cost)) return false;
+  if(S.gl.cash < cost) return false;
+  post({ cash:-cost, retained:-cost }, "branch-open");
+  S.branches.push({ id: S.nextId++, region, opened: S.day, seq: existing+1 });
+  logEvent(`Opened a branch in ${region} for ${fmtMoney(cost,0)} — this is branch #${existing+1} there.`, "ok");
+  bumpAll(); saveGame();
+  return true;
+}
+function closeBranch(id){
+  const i = S.branches.findIndex(b => b.id === id);
+  if(i < 0) return false;
+  const b = S.branches[i];
+  S.branches.splice(i,1);
+  logEvent(`Closed the branch in ${b.region} — overhead stops, and the region's reach falls back toward indirect/online reach.`, "info");
+  bumpAll(); saveGame();
+  return true;
+}
+function totalBranchOverhead(){
+  let n = 0;
+  for(const r of REGIONS) n += branchOverhead(r) * S.branches.filter(b=>b.region===r).length;
+  return n;
+}
+
+/* ============================= departments ==============================
+   One consistent budget->effectiveness curve for every department: spend
+   converts a slow, unpredictable risk (fraud, operational error, review
+   backlog, churn) into a smaller, budgeted one. Diminishing returns always —
+   doubling spend never doubles the benefit.
+   ===================================================================== */
+function deptEffect(name){
+  const budget = Math.max(0, (S.departments[name] && S.departments[name].budget) || 0);
+  const half = CFG.DEPT_HALF[name] || 5000;
+  return budget/(budget+half);   // 0 at zero spend, 0.5 at "half", asymptotic to 1
+}
+function reviewCapacityPerDay(){
+  return CFG.UW_BASE_CAPACITY + CFG.UW_MAX_CAPACITY_ADD*deptEffect("underwriting");
+}
+// multi-product relationships churn less, and a well-staffed customer-service
+// department retains everyone better — the two stack multiplicatively
+function churnMultiplier(custId){
+  const multi = custId != null && S.custIndex[custId] && S.custIndex[custId].count > 1;
+  const serviceMult = 1 + (0.5 - deptEffect("service"))*0.4;   // 1.2 unstaffed -> 0.8 fully staffed
+  return (multi ? CFG.CROSS_SELL_CHURN_MULT : 1) * serviceMult;
+}
+
 function pickRegion(){
   const rb = S.policy.regionBudget||0, tgt = S.policy.regionTarget;
   if(tgt && rb > 0){
     const share = clamp(0.4 + 0.4*Math.log(1+rb/4000)/Math.log(6), 0.4, 0.85);
     if(rnd() < share) return tgt;
   }
-  return pick(REGIONS);
+  const weights = {}; for(const r of REGIONS) weights[r] = regionWeight(r);
+  return weighted(weights);
+}
+// an existing customer applying for a second product, instead of a stranger —
+// the relationship cross-sell angle: this is drawn *before* deciding whether
+// the rest of the applicant is fresh, since a repeat customer keeps their
+// real identity (name/score/income/region), not a newly rolled one
+function rollCrossSellProfile(){
+  const ids = Object.keys(S.custIndex);
+  if(!ids.length || rnd() > CFG.CROSS_SELL_CHANCE) return null;
+  return S.custIndex[ids[Math.floor(rnd()*ids.length)]];
 }
 function makeApplicant(){
   const score = clamp(Math.round(680 + 90*randn()), 300, 850);
@@ -1318,9 +1522,17 @@ function makeApplicant(){
   const homeEquity = Math.round(income*(3+9*rnd()));
   const bizRevenue = Math.round(Math.exp(11.5 + 0.55*randn() + 0.15*z) * sizeMult);
   const bizDSCR = clamp(0.5 + 1.3*rnd() + (score-680)/900, 0.25, 2.6);
+  const cross = rollCrossSellProfile();
+  if(cross){
+    return { name: cross.name, age, income: cross.income, score: cross.score, tier: tierOf(cross.score),
+             debtPmt: Math.round(debtRatio*cross.income), existingDTI: debtRatio,
+             historyMonths, homeEquity, bizRevenue, bizDSCR, region: cross.region,
+             existingCustomer: true, custId: cross.custId };
+  }
   return { name: randomName(), age, income, score, tier: tierOf(score),
            debtPmt: Math.round(debtRatio*income), existingDTI: debtRatio,
-           historyMonths, homeEquity, bizRevenue, bizDSCR, region: pickRegion() };
+           historyMonths, homeEquity, bizRevenue, bizDSCR, region: pickRegion(),
+           existingCustomer: false, custId: null };
 }
 
 function requestedAmount(c, product){
@@ -1334,6 +1546,9 @@ function requestedAmount(c, product){
     case "studentloan": return clamp(Math.round((8000+52000*rnd())/500)*500, 3000, 120000);
     case "sbloan":   return clamp(Math.round(c.bizRevenue*(0.15+0.55*rnd())/1000)*1000, 10000, 500000);
     case "securedcard": return clamp(Math.round(c.income*(0.05+0.22*rnd())/100)*100, 200, 5000);
+    // small point-of-sale ticket — this is the entire product's identity
+    case "bnpl":     return clamp(Math.round((30+370*rnd())/5)*5, 25, 600);
+    case "bnplplus": return clamp(Math.round(c.income*(0.02+0.15*rnd())/10)*10, 300, 8000);
   }
   return 0;
 }
@@ -1344,7 +1559,8 @@ function makeApplication(){
   const app = { id: S.nextId++, day: S.day, expires: S.day + CFG.APP_TTL, product,
                 name:c.name, age:c.age, income:c.income, score:c.score, tier:c.tier,
                 debtPmt:c.debtPmt, existingDTI:c.existingDTI, historyMonths:c.historyMonths,
-                homeEquity:c.homeEquity, bizRevenue:c.bizRevenue, bizDSCR:c.bizDSCR, region:c.region };
+                homeEquity:c.homeEquity, bizRevenue:c.bizRevenue, bizDSCR:c.bizDSCR, region:c.region,
+                existingCustomer:c.existingCustomer, custId:c.custId };
   if(product === "deposit"){
       app.kind = weighted(CFG.DEP_KIND);
     app.requested = Math.max(250, Math.round(Math.exp(8.4 + 1.15*randn()) * (0.7 + 0.8*rnd()) * (charterCfg().sizeMult||1)));
@@ -1356,7 +1572,13 @@ function makeApplication(){
   app.requested = requestedAmount(c, product);
   app.amount = Math.min(app.requested, S.policy.maxAmount[product]);
   app.term = REVOLVING[product] ? 0 : pick(TERMS[product]);
-  app.apr = S.rates.loan[product][c.tier];
+  // BNPL "Pay in 4" charges the customer 0% — the bank earns the merchant
+  // discount fee instead, not interest, so it never reads the rate sheet
+  app.apr = product === "bnpl" ? 0 : S.rates.loan[product][c.tier];
+  // relationship cross-sell: an existing customer applying for another
+  // product gets a modest rate discount versus a cold applicant
+  if(c.existingCustomer && product !== "bnpl")
+    app.apr = Math.max(0.5, round2(app.apr - CFG.CROSS_SELL_RATE_DISCOUNT));
   app.payment = monthlyObligation(product, app.amount, app.apr, app.term);
   app.dti = (c.debtPmt + app.payment)/c.income;
   return app;
@@ -1431,19 +1653,34 @@ function headroom(product, floors){
 /* ---------------------------- underwriting ---------------------------- */
 function declineResult(reason, capacity){ return capacity ? { path:"decline", reason, capacity:true } : { path:"decline", reason }; }
 
+// an existing customer applying for another product gets preferential
+// underwriting treatment: an effective score bump against the *thresholds*
+// only — their real score (used for pricing/tier) never changes
+function effScore(app){ return app.existingCustomer ? app.score + CFG.CROSS_SELL_SCORE_BOOST : app.score; }
+
 // HELOC: revolving and secured, but still a score/DTI decision — its own
 // (usually stricter) bands rather than the generic consumer policy
 function underwriteHeloc(app){
   if(S.reg.restricted) return declineResult("Regulator has restricted new credit extension.");
   if(!S.policy.products.heloc) return declineResult("Product not offered under current policy.");
-  const hp = S.policy.heloc;
-  if(app.score < hp.minScore) return declineResult(`Score ${app.score} is below the HELOC policy minimum of ${hp.minScore}.`);
+  const hp = S.policy.heloc, es = effScore(app);
+  if(es < hp.minScore) return declineResult(`Score ${app.score} is below the HELOC policy minimum of ${hp.minScore}.`);
   if(app.dti > hp.maxDTI) return declineResult(`DTI of ${pct(app.dti)} exceeds the HELOC policy maximum of ${pct(hp.maxDTI)}.`);
   const cap = capacityCheck(app.product, app.amount);
   if(!cap.ok) return declineResult(`Insufficient lending capacity — ${cap.why}.`, true);
-  if(app.score >= S.policy.autoApprove) return { path:"approve" };
-  if(app.score < S.policy.autoDecline) return declineResult(`Score ${app.score} sits below the auto-decline threshold of ${S.policy.autoDecline}.`);
+  if(es >= S.policy.autoApprove) return { path:"approve" };
+  if(es < S.policy.autoDecline) return declineResult(`Score ${app.score} sits below the auto-decline threshold of ${S.policy.autoDecline}.`);
   return { path:"review", reason:"Score falls inside the manual review band." };
+}
+// BNPL "Pay in 4": originated at the point of sale, not through a bank
+// application — near-universal instant approval, never a manual review band.
+function underwriteBNPL(app){
+  if(S.reg.restricted) return declineResult("Regulator has restricted new credit extension.");
+  if(!S.policy.products.bnpl) return declineResult("Product not offered under current policy.");
+  if(app.score < 420) return declineResult(`Score ${app.score} fails even BNPL's minimal point-of-sale screen.`);
+  const cap = capacityCheck(app.product, app.amount);
+  if(!cap.ok) return declineResult(`Insufficient lending capacity — ${cap.why}.`, true);
+  return { path:"approve" };
 }
 // Student loans: a short credit history is not treated as a bad one — a thin
 // file with a workable score still clears, instead of an automatic decline.
@@ -1501,16 +1738,18 @@ function underwrite(app){
   if(app.product === "studentloan") return underwriteStudentLoan(app);
   if(app.product === "sbloan") return underwriteSbLoan(app);
   if(app.product === "securedcard") return underwriteSecuredCard(app);
+  if(app.product === "bnpl") return underwriteBNPL(app);
   if(S.reg.restricted) return declineResult("Regulator has restricted new credit extension.");
   if(!p.products[app.product]) return declineResult("Product not offered under current policy.");
-  if(app.score < p.minScore)
+  const es = effScore(app);
+  if(es < p.minScore)
     return declineResult(`Score ${app.score} is below the policy minimum of ${p.minScore}.`);
   if(app.dti > p.maxDTI)
     return declineResult(`DTI of ${pct(app.dti)} exceeds the policy maximum of ${pct(p.maxDTI)}.`);
   const cap = capacityCheck(app.product, app.amount);
   if(!cap.ok) return declineResult(`Insufficient lending capacity — ${cap.why}.`, true);
-  if(app.score >= p.autoApprove) return { path:"approve" };
-  if(app.score < p.autoDecline)
+  if(es >= p.autoApprove) return { path:"approve" };
+  if(es < p.autoDecline)
     return declineResult(`Score ${app.score} sits below the auto-decline threshold of ${p.autoDecline}.`);
   return { path:"review", reason:"Score falls inside the manual review band." };
 }
@@ -1542,9 +1781,12 @@ function bookDeposit(app){
   }
   // depositors bring more money when the rate is good
   const amt = Math.round(app.amount * clamp(0.55 + 0.9*appeal, 0.5, 1.5));
-  const a = makeDepositAccount(app.name, app.kind, amt, false, app.term);
+  const custId = app.custId != null ? app.custId : S.nextId++;
+  const a = makeDepositAccount(app.name, app.kind, amt, false, app.term, app.region, custId);
   S.depAccts.push(a);
   post({ cash: amt, deposits: amt }, "deposit-open");
+  registerCustomerProduct(custId, { name:app.name, score:app.score, income:app.income, region:app.region, tier:app.tier });
+  if(app.existingCustomer) S.stats.crossSellBooked++;
   S.stats.customersServed++;
   DIRTY.portfolio = true;
   // a wealth-unlocked relationship also refers in outside assets to manage
@@ -1554,11 +1796,12 @@ function bookDeposit(app){
 
 function bookCredit(app, offer){
   const product = app.product;
+  const custId = app.custId != null ? app.custId : S.nextId++;
   const a = {
     id: S.nextId++, name: app.name, product, tier: app.tier, score: app.score,
     opened: S.day, apr: offer.apr, income: app.income, dti: app.dti,
     status: "current", missed: 0, lifeInterest: 0, lifeFees: 0,
-    secured: !!SECURED[product], lastPay: S.day, region: app.region,
+    secured: !!SECURED[product], lastPay: S.day, region: app.region, custId,
   };
   if(product === "card" || product === "securedcard"){
     a.limit = offer.amount; a.balance = 0; a.term = 0;
@@ -1567,7 +1810,7 @@ function bookCredit(app, offer){
     if(product === "securedcard"){
       // cash collateral equal to the limit becomes a deposit liability — the
       // card is effectively risk-free to the bank as long as it stays open
-      const dep = makeDepositAccount(app.name, "collateral", offer.amount, false);
+      const dep = makeDepositAccount(app.name, "collateral", offer.amount, false, null, app.region, custId);
       S.depAccts.push(dep);
       post({ cash: offer.amount, deposits: offer.amount }, "securedcard-collateral");
       a.collateralId = dep.id;
@@ -1592,10 +1835,17 @@ function bookCredit(app, offer){
     a.payment = pmtOf(offer.amount, offer.apr, offer.term);
     if(product === "sbloan") a.guaranteedPct = clamp(S.policy.sbloan.guaranteedPct||0, 0, CFG.SB_GUARANTEE_MAX);
     post({ cash: -offer.amount, grossLoans: offer.amount }, "originate");
-    const fee = Math.round(offer.amount * S.fees.origPct/100);
-    if(fee > 0){
-      income("feeOrig", fee, { cash: fee, retained: fee }, "origination-fee");
-      a.lifeFees += fee;
+    if(product === "bnpl" || product === "bnplplus"){
+      // revenue is the merchant discount fee, not interest — paid by the
+      // merchant at the point of sale, distinct from card interchange
+      const mf = Math.round(offer.amount * CFG.BNPL_MERCHANT_FEE);
+      if(mf > 0){ income("feeMerchant", mf, { cash: mf, retained: mf }, "bnpl-merchant-fee"); a.lifeFees += mf; }
+    } else {
+      const fee = Math.round(offer.amount * S.fees.origPct/100);
+      if(fee > 0){
+        income("feeOrig", fee, { cash: fee, retained: fee }, "origination-fee");
+        a.lifeFees += fee;
+      }
     }
   }
   // background fraud: built to pass score/DTI, so underwriting can't catch it —
@@ -1604,18 +1854,19 @@ function bookCredit(app, offer){
     a.fraud = true;
     a.fraudReveal = S.day + rint(CFG.FRAUD_REVEAL_MIN_DAYS, CFG.FRAUD_REVEAL_MAX_DAYS);
   }
+  registerCustomerProduct(custId, { name:app.name, score:app.score, income:app.income, region:app.region, tier:app.tier });
+  if(app.existingCustomer) S.stats.crossSellBooked++;
   S.loans.push(a);
   S.stats.customersServed++;
   DIRTY.portfolio = true;
   return a;
 }
 function fraudRate(){
-  const spend = Math.max(0, S.policy.fcSpend||0);
-  return CFG.FRAUD_MIN_RATE + (CFG.FRAUD_BASE_RATE-CFG.FRAUD_MIN_RATE)*CFG.FRAUD_SPEND_HALF/(CFG.FRAUD_SPEND_HALF+spend);
+  const eff = deptEffect("fraud");
+  return CFG.FRAUD_MIN_RATE + (CFG.FRAUD_BASE_RATE-CFG.FRAUD_MIN_RATE)*(1-eff);
 }
 function complianceViolationChance(){
-  const spend = Math.max(0, S.policy.fcSpend||0);
-  return CFG.COMPLIANCE_VIOLATION_BASE*CFG.FRAUD_SPEND_HALF/(CFG.FRAUD_SPEND_HALF+spend*1.5);
+  return CFG.COMPLIANCE_VIOLATION_BASE*(1 - deptEffect("fraud")*0.9);
 }
 
 function decide(app, action, offer){
@@ -1676,7 +1927,10 @@ function applyPayment(a, amt){
   if(a.balance < 1e-9) a.balance = 0;
 }
 function chargeLateFee(a){
-  const f = S.fees.lateFee;
+  // BNPL late fees are small and product-specific, not the general policy fee —
+  // most BNPL plans charge no interest at all, so this and the merchant
+  // discount fee are effectively the whole revenue model
+  const f = (a.product === "bnpl" || a.product === "bnplplus") ? CFG.BNPL_LATE_FEE : S.fees.lateFee;
   if(f <= 0) return;
   income("feeLate", f, { grossLoans:f, retained:f }, "late-fee");
   a.balance += f; a.lifeFees += f;
@@ -1684,6 +1938,7 @@ function chargeLateFee(a){
 function closeAccount(a, why){
   if(a.balance > 0) applyPayment(a, a.balance);
   a.status = "closed"; a.closedDay = S.day; a.closeWhy = why || "paid off";
+  unregisterCustomerProduct(a.custId);
   DIRTY.portfolio = true;
 }
 function lgdOf(a){
@@ -1721,6 +1976,7 @@ function chargeOff(a){
     if(excess > 0) acc("provision", excess);   // loss beyond the allowance hits the P&L directly
   }
   a.status = "chargedoff"; a.closedDay = S.day; a.balance = 0;
+  unregisterCustomerProduct(a.custId);
   S.stats.chargeOffs++; S.stats.chargeOffAmt += bal;
   S.monthChargeOffs = (S.monthChargeOffs||0) + bal;
   DIRTY.portfolio = true;
@@ -1733,6 +1989,7 @@ function fraudChargeOff(a){
   post({ grossLoans:-bal, retained:-bal }, "fraud-loss");
   acc("fraudLoss", bal);
   a.status = "chargedoff"; a.closedDay = S.day; a.balance = 0; a.closeWhy = "fraudulent identity — full loss";
+  unregisterCustomerProduct(a.custId);
   S.stats.fraudLossAmt += bal; S.stats.fraudLossCount++;
   S.monthChargeOffs = (S.monthChargeOffs||0) + bal;
   DIRTY.portfolio = true;
@@ -1873,6 +2130,7 @@ function breakCDEarly(d){
   income("feeService", penalty, { cash:-payout, deposits:-bal, retained:penalty }, "cd-early-withdrawal");
   d.balance = 0; d.status = "closed"; d.closedDay = S.day;
   d.closeWhy = "broke the CD early — forfeited interest";
+  unregisterCustomerProduct(d.custId);
   DIRTY.portfolio = true;
   return true;
 }
@@ -1891,6 +2149,13 @@ function processDepositAccount(d){
     const f = S.fees.depMonthly;
     income("feeService", f, { deposits:-f, retained:f }, "service-fee");
     d.balance -= f;
+  }
+  // debit interchange: a small cut of checking-account spend activity, distinct
+  // from credit-card interchange — scales with the checking book, not a flat fee
+  if(d.kind === "checking" && d.balance > 0){
+    const volume = d.balance * CFG.DEBIT_TURNOVER * (0.7 + 0.6*rnd());
+    const ic = volume * CFG.DEBIT_INTERCHANGE_RATE;
+    if(ic > 0) income("feeDebit", ic, { cash:ic, retained:ic }, "debit-interchange");
   }
   // a small, rare chance a CD holder needs the cash before maturity —
   // longer terms can't be pulled by a run, but a customer can still break one
@@ -1921,7 +2186,8 @@ function processDepositAccount(d){
   // attrition
   if(d.kind !== "cd"){
     const under = Math.max(0, marketDepAPY(d.kind) - effectiveDepAPY(d.kind));
-    const p = (0.010 + under*0.045*d.beta + Math.max(0, 45 - S.rep)*0.0016) * (charterCfg().depositChurnMult || 1);
+    const p = (0.010 + under*0.045*d.beta + Math.max(0, 45 - S.rep)*0.0016)
+              * (charterCfg().depositChurnMult || 1) * churnMultiplier(d.custId);
     if(rnd() < p) return closeDepositAccount(d, "moved to a competitor");
   }
   if(d.balance < 25) return closeDepositAccount(d, "balance exhausted");
@@ -1931,6 +2197,7 @@ function closeDepositAccount(d, why){
   const bal = d.balance;
   if(bal > 0 && !withdraw(bal, "deposit-close")) return liquidityFailure(bal);
   d.balance = 0; d.status = "closed"; d.closedDay = S.day; d.closeWhy = why;
+  unregisterCustomerProduct(d.custId);
   DIRTY.portfolio = true;
   return true;
 }
@@ -2787,12 +3054,19 @@ function reputationTarget(){
   dcomp /= 3;
   t += clamp(dcomp*7, -12, 12);
   let lsum = 0, n = 0;
-  for(const p of PRODUCTS) for(const tr of TIERS){ lsum += marketAPR(p, tr) - S.rates.loan[p][tr]; n++; }
+  for(const p of PRODUCTS){
+    if(RATE_FIXED[p]) continue;   // BNPL's 0% isn't a pricing decision — exclude it from this comparison
+    for(const tr of TIERS){ lsum += marketAPR(p, tr) - S.rates.loan[p][tr]; n++; }
+  }
   t += clamp((lsum/n)*2.2, -12, 12);
   const ar = S.stats.monthDecided > 0 ? S.stats.monthApproved/S.stats.monthDecided : 0.4;
   t += clamp((ar - 0.35)*22, -8, 8);
   const feeLoad = S.fees.origPct/2 + S.fees.lateFee/40 + S.fees.cardAnnual/60 + S.fees.depMonthly/4;
   t -= clamp(feeLoad*1.4, 0, 10);
+  // customer-service staffing quality — separate from rate competitiveness and
+  // approval fairness above: an understaffed support desk drags reputation
+  // even if your rates and approvals are otherwise generous
+  t += clamp((deptEffect("service")-0.5)*10, -5, 5);
   const mf = marketingFactor();
   t += clamp(3*(mf.brand - 1)*mf.strength + Math.min(3, S.marketing.budget/12000), 0, 5);
   t += netIncomeOf(S.is.mtd) > 0 ? 3 : -3;
@@ -2963,12 +3237,33 @@ function monthClose(){
     if(!ensureCash(rb)) return liquidityFailure(rb);
     income("marketing", rb, { cash:-rb, retained:-rb }, "region-marketing");
   }
-  // fraud & compliance investment — a real risk-tolerance choice, not a tax:
-  // zero spend is a valid playstyle that just eats unpredictable fraud and audit risk
-  if(S.policy.fcSpend > 0){
-    const fc = S.policy.fcSpend;
-    if(!ensureCash(fc)) return liquidityFailure(fc);
-    income("compliance", fc, { cash:-fc, retained:-fc }, "fraud-compliance-spend");
+  if(totalBranchOverhead() > 0){
+    const bo = totalBranchOverhead();
+    if(!ensureCash(bo)) return liquidityFailure(bo);
+    income("branchOpex", bo, { cash:-bo, retained:-bo }, "branch-overhead");
+  }
+  // departments: one consistent budgeting interface. Fraud & compliance spend
+  // lives here now — a real risk-tolerance choice, not a tax: zero spend is a
+  // valid playstyle that just eats unpredictable fraud and audit risk.
+  const fcBudget = S.departments.fraud.budget||0;
+  if(fcBudget > 0){
+    if(!ensureCash(fcBudget)) return liquidityFailure(fcBudget);
+    income("compliance", fcBudget, { cash:-fcBudget, retained:-fcBudget }, "fraud-compliance-spend");
+  }
+  const uwBudget = S.departments.underwriting.budget||0;
+  if(uwBudget > 0){
+    if(!ensureCash(uwBudget)) return liquidityFailure(uwBudget);
+    income("deptUW", uwBudget, { cash:-uwBudget, retained:-uwBudget }, "underwriting-staffing");
+  }
+  const svcBudget = S.departments.service.budget||0;
+  if(svcBudget > 0){
+    if(!ensureCash(svcBudget)) return liquidityFailure(svcBudget);
+    income("deptService", svcBudget, { cash:-svcBudget, retained:-svcBudget }, "customer-service-staffing");
+  }
+  const qaBudget = S.departments.qa.budget||0;
+  if(qaBudget > 0){
+    if(!ensureCash(qaBudget)) return liquidityFailure(qaBudget);
+    income("deptQA", qaBudget, { cash:-qaBudget, retained:-qaBudget }, "qa-staffing");
   }
   if(rnd() < CFG.COMPLIANCE_AUDIT_CHANCE * (charterCfg().auditMult||1)){
     S.stats.complianceAudits++;
@@ -2980,13 +3275,26 @@ function monthClose(){
       logEvent(`Regulator audit found a compliance violation — fined ${fmtMoney(fine,0)}. Thin fraud & compliance spend leaves this to chance.`, "bad");
     } else {
       const minor = CFG.COMPLIANCE_MINOR_COST;
-      if(S.policy.fcSpend > 0){
+      if(fcBudget > 0){
         income("compliance", minor, { cash:-minor, retained:-minor }, "compliance-minor-finding");
         logEvent(`Regulator audit came back with a minor, cheap-to-fix finding — ${fmtMoney(minor,0)}.`, "info");
       } else {
         logEvent(`Regulator audit came back clean.`, "ok");
       }
     }
+  }
+  // QA / operational risk: process failures and human error, distinct from
+  // credit, market/duration, and liquidity risk — the fourth loss category.
+  // A well-staffed QA function catches these before they surface; an
+  // understaffed one raises the odds one gets through.
+  const opChance = CFG.OP_ERROR_BASE_CHANCE * (1 - deptEffect("qa")*CFG.OP_ERROR_QA_REDUCTION);
+  if(rnd() < opChance){
+    const flavor = pick(["a misapplied payment", "a documentation error", "a miscalculated statement"]);
+    const cost = Math.max(CFG.OP_ERROR_COST_MIN, M().assets*CFG.OP_ERROR_COST_ASSET_BPS*(0.6+0.8*rnd()));
+    if(ensureCash(cost)) income("opLoss", cost, { cash:-cost, retained:-cost }, "operational-error");
+    S.stats.opErrorCount++; S.stats.opErrorCost += cost;
+    S.rep = clamp(S.rep - CFG.OP_ERROR_REP_HIT, 0, 100);
+    logEvent(`Operational error: ${flavor} cost ${fmtMoney(cost,0)} to make right. ${deptEffect("qa")<0.3?"QA staffing is thin.":"Even a staffed QA desk doesn't catch everything."}`, "bad");
   }
   // fraud ring: a rare, delayed reveal — a batch of seasoned, previously-clean
   // accounts turn out to have been fraudulent all along
@@ -3078,6 +3386,29 @@ function pruneDead(){
 }
 
 /* =============================== daily step ============================= */
+// Underwriting department: staffing determines manual-review throughput.
+// Understaffed relative to the queue means files pile up faster than they
+// can ever be cleared before expiry, so the oldest excess gets auto-decided
+// by a crude policy default instead of your actual judgment — exactly the
+// failure mode of an understaffed underwriting desk.
+function processUnderwritingBacklog(){
+  const capacity = reviewCapacityPerDay();
+  const backlogLimit = Math.max(CFG.QUEUE_CAP*0.15, Math.ceil(capacity * CFG.APP_TTL * 0.8));
+  if(S.apps.length <= backlogLimit) return;
+  const excess = S.apps.length - backlogLimit;
+  const mid = (S.policy.autoApprove + S.policy.autoDecline)/2;
+  const toProcess = S.apps.slice().sort((a,b)=>a.day-b.day).slice(0, excess);
+  const ids = new Set(toProcess.map(a=>a.id));
+  S.apps = S.apps.filter(a => !ids.has(a.id));
+  for(const app of toProcess){
+    S.stats.autoDecidedApps++;
+    if(app.product === "deposit" || (app.score||0) >= mid) decide(app, "approve");
+    else decide(app, "deny", { reason:"auto-decided by policy default — underwriting was too backlogged to review it manually" });
+  }
+  logEvent(`Underwriting backlog: ${excess} queued application${excess>1?"s were":" was"} auto-decided by policy default instead of manually reviewed — understaffed underwriting at ${capacity.toFixed(1)} reviews/day.`, "warn");
+  DIRTY.apps = true;
+}
+
 function stepDay(){
   if(S.over) return;
   S.day++;
@@ -3098,6 +3429,7 @@ function stepDay(){
     S.rep = clamp(S.rep - 0.12*overflow, 0, 100);
     logEvent(`${overflow} application${overflow>1?"s were":" was"} turned away — the review queue is full at ${CFG.QUEUE_CAP}.`, "warn");
   }
+  processUnderwritingBacklog();
 
   // --- applications that walk away ---------------------------------------
   if(S.apps.length){
@@ -3155,9 +3487,9 @@ const LOAN_F = ["id","name","product","tier","score","opened","apr","income","dt
   "missed","lifeInterest","lifeFees","secured","lastPay","limit","balance","term","revolver",
   "spendRate","nextAnnual","principal","remaining","payment","closedDay","closeWhy","region",
   "guaranteedPct","helocMargin","collateralId","graduated","deferred","deferUsed","deferUntil",
-  "fraud","fraudReveal"];
+  "fraud","fraudReveal","custId"];
 const DEP_F = ["id","name","kind","balance","apy","maturity","opened","status","beta","drift",
-  "closedDay","closeWhy","term"];
+  "closedDay","closeWhy","term","region","custId"];
 const SEC_F = ["id","type","duration","classification","bookValue","couponRate","opened",
   "maturity","status","closedDay","closeWhy"];
 const ROUND_TO = { balance:2, apr:2, dti:4, income:0, payment:2, lifeInterest:2, lifeFees:2,
@@ -3305,6 +3637,24 @@ function migrate(o){
     if(o.stats.complianceAudits == null) o.stats.complianceAudits = 0;
     if(o.stats.complianceFines == null) o.stats.complianceFines = 0;
     if(o.stats.grantReceived == null) o.stats.grantReceived = 0;
+  }
+
+  // --- BNPL / debit interchange / cross-sell / branches / departments (this update) ---
+  const newProducts2 = { bnpl:true, bnplplus:true };
+  for(const p in newProducts2) if(o.policy.products[p] == null) o.policy.products[p] = newProducts2[p];
+  const newMax2 = { bnpl:600, bnplplus:6000 };
+  for(const p in newMax2) if(o.policy.maxAmount[p] == null) o.policy.maxAmount[p] = newMax2[p];
+  // fraud & compliance moves from a standalone policy slider into the unified
+  // department budgeting system — carry the old spend level forward exactly
+  if(!o.departments) o.departments = { underwriting:{budget:0}, fraud:{budget:o.policy.fcSpend||0}, service:{budget:0}, qa:{budget:0} };
+  for(const d of ["underwriting","fraud","service","qa"]) if(!o.departments[d]) o.departments[d] = { budget:0 };
+  if(!Array.isArray(o.branches)) o.branches = [];
+  if(!o.custIndex) o.custIndex = {};
+  if(o.stats){
+    if(o.stats.autoDecidedApps == null) o.stats.autoDecidedApps = 0;
+    if(o.stats.opErrorCount == null) o.stats.opErrorCount = 0;
+    if(o.stats.opErrorCost == null) o.stats.opErrorCost = 0;
+    if(o.stats.crossSellBooked == null) o.stats.crossSellBooked = 0;
   }
   return o;
 }
@@ -3498,11 +3848,13 @@ function renderOverview(){
       const is = S.is.mtd, last = S.is.last;
       const dom = dateParts(S.day).d;
       const projOrigFee = dom > 0 ? is.feeOrig/dom*CFG.DAYS_PER_MONTH : 0;
-      const trailingFee = last.feeLate + last.feeAnnual + last.feeInterchange + last.feeService
+      const trailingFee = last.feeLate + last.feeAnnual + last.feeInterchange + last.feeDebit + last.feeMerchant + last.feeService
                          + last.feeWealth + last.grantIncome;
       const projFees = projOrigFee + trailingFee;
       const revenue = (m.projIntIncome + m.projSecInt) - (m.projDepInt + m.projSubInt + m.projWholeInt) + projFees;
-      const cost = m.projOpex + S.marketing.budget + (S.policy.regionBudget||0) + (S.policy.fcSpend||0);
+      const deptCost = S.departments.underwriting.budget + S.departments.fraud.budget
+                      + S.departments.service.budget + S.departments.qa.budget;
+      const cost = m.projOpex + S.marketing.budget + (S.policy.regionBudget||0) + deptCost + totalBranchOverhead();
       const eff = cost > 0 ? cost/revenue : (revenue > 0 ? 0 : 1);
       const color = eff < 0 ? "var(--bad)" : eff <= 0.65 ? "var(--good)" : eff <= 1 ? "var(--warn)" : "var(--bad)";
       const net = revenue - cost;
@@ -3526,10 +3878,11 @@ function renderOverview(){
   );
 
   const is = S.is.mtd, nii = is.intLoans + is.intSec - is.intDep - is.intSub - is.intWhole;
-  const fees = is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService + is.gainSale
+  const fees = is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeDebit + is.feeMerchant + is.feeService + is.gainSale
              + is.feeWealth + is.grantIncome;
   const ni = netIncomeOf(is);
   setText("ovISPeriod", "month to date");
+  const deptTotal = is.deptUW + is.deptService + is.deptQA + is.branchOpex;
   setHTML("ovIS",
     row("Interest income", fmtMoney(is.intLoans + is.intSec, 0)) +
     row("Interest expense", "("+fmtMoney(is.intDep,0)+")") +
@@ -3537,7 +3890,8 @@ function renderOverview(){
     row("Provision for losses", provText(is.provision), is.provision>0?"bad":"good") +
     row("Fee income", fmtMoney(fees,0)) +
     row("Operating expense", "("+fmtMoney(is.opex + is.marketing,0)+")") +
-    (is.fraudLoss+is.compliance > 0 ? row("Fraud & compliance", "("+fmtMoney(is.fraudLoss+is.compliance,0)+")", "bad") : "") +
+    (deptTotal > 0 ? row("Departments &amp; branches", "("+fmtMoney(deptTotal,0)+")") : "") +
+    (is.fraudLoss+is.compliance+is.opLoss > 0 ? row("Fraud, compliance &amp; operational", "("+fmtMoney(is.fraudLoss+is.compliance+is.opLoss,0)+")", "bad") : "") +
     row("Tax", "("+fmtMoney(is.tax,0)+")") +
     row("Net income", fmtMoney(ni,0), "total") +
     `<div class="rule"></div>` +
@@ -4000,8 +4354,10 @@ const RATE_PRESETS = {
 const RATE_PRESET_LABEL = { aggressive:"Aggressive", passive:"Passive", lean:"Lean" };
 function applyLoanRatePreset(key){
   const off = RATE_PRESETS[key]; if(!off) return;
-  for(const p of PRODUCTS) for(const t of TIERS)
-    S.rates.loan[p][t] = round2(clamp(marketAPR(p,t) + off.loanOffset, 0.5, 45));
+  for(const p of PRODUCTS){
+    if(RATE_FIXED[p]) continue;
+    for(const t of TIERS) S.rates.loan[p][t] = round2(clamp(marketAPR(p,t) + off.loanOffset, 0.5, 45));
+  }
   logEvent(`Loan and card rate sheet auto-set to ${RATE_PRESET_LABEL[key].toLowerCase()} (${off.loanOffset>=0?"+":""}${off.loanOffset.toFixed(2)}pt vs market, every tier).`, "info");
   DIRTY.kpi = true; DIRTY.overview = true;
   buildRates(); saveGame();
@@ -4054,10 +4410,14 @@ function buildRates(){
       "Billed at origination and each anniversary.") +
     numRow("Deposit monthly service fee $", "fees.depMonthly", S.fees.depMonthly, 1, 0, 25,
       "Charged on checking and savings. Reliable income, unpopular with depositors.") +
-    `<div class="hint">Fee income last month: <b>${fmtMoney(S.is.last.feeOrig+S.is.last.feeLate+S.is.last.feeAnnual+S.is.last.feeInterchange+S.is.last.feeService,0)}</b>.</div>`);
+    `<div class="hint">Fee income last month: <b>${fmtMoney(S.is.last.feeOrig+S.is.last.feeLate+S.is.last.feeAnnual+S.is.last.feeInterchange+S.is.last.feeDebit+S.is.last.feeMerchant+S.is.last.feeService,0)}</b>.</div>`);
 
   let g = `<thead><tr><th>Product</th>${TIERS.map(t=>`<th>${t} · ${TIER_LABEL[t]}</th>`).join("")}</tr></thead><tbody>`;
   for(const p of PRODUCTS){
+    if(RATE_FIXED[p]){
+      g += `<tr><td>${PRODUCT_LABEL[p]}</td><td colspan="${TIERS.length}" class="dim">Fixed at 0% — revenue is the merchant discount fee, not interest</td></tr>`;
+      continue;
+    }
     g += `<tr><td>${PRODUCT_LABEL[p]}</td>` + TIERS.map(t =>
       `<td><input type="number" step="0.25" data-bind="rates.loan.${p}.${t}" data-lo="0.5" data-hi="45"
         value="${S.rates.loan[p][t]}"><div class="mkt" data-mkt="${p}.${t}">${rate(marketAPR(p,t))}</div></td>`).join("") + `</tr>`;
@@ -4211,7 +4571,7 @@ function buildMarketing(){
 
   let dcomp = 0; for(const k in DEP_MKT_MULT) dcomp += effectiveDepAPY(k) - marketDepAPY(k); dcomp /= 3;
   let lsum = 0, n = 0;
-  for(const p of PRODUCTS) for(const t of TIERS){ lsum += marketAPR(p,t) - S.rates.loan[p][t]; n++; }
+  for(const p of PRODUCTS){ if(RATE_FIXED[p]) continue; for(const t of TIERS){ lsum += marketAPR(p,t) - S.rates.loan[p][t]; n++; } }
   const ar = S.stats.monthDecided > 0 ? S.stats.monthApproved/S.stats.monthDecided : 0.4;
   const feeLoad = S.fees.origPct/2 + S.fees.lateFee/40 + S.fees.cardAnnual/60 + S.fees.depMonthly/4;
   const drv = [
@@ -4231,20 +4591,6 @@ function buildMarketing(){
       (v>=0?"+":"") + v.toFixed(1), sign(v))).join("") +
     row("Target", reputationTarget().toFixed(1), "total") +
     row("Current", S.rep.toFixed(1), "total"));
-
-  setHTML("mkFraud",
-    `<label class="field"><span>Fraud &amp; compliance investment</span>
-       <input type="range" min="0" max="15000" step="250" data-bind="policy.fcSpend" data-re="marketing" value="${S.policy.fcSpend}">
-       <span class="hint">Currently <b class="num">${fmtMoney(S.policy.fcSpend)}</b> per month, charged as operating expense.</span></label>
-     <div class="hint" style="margin-bottom:8px">Diminishing returns: spend converts a slow, unpredictable tail risk into a smaller, budgeted cost. Zero spend is a legitimate playstyle — you just eat what comes, in fraud losses and audit fines.</div>
-     <div class="rule"></div>` +
-    row("Estimated fraud rate on new originations", pct(fraudRate(),2)) +
-    row("Estimated chance an audit finds a violation", pct(complianceViolationChance(),0)) +
-    row("Audit frequency", pct(CFG.COMPLIANCE_AUDIT_CHANCE*(charterCfg().auditMult||1),1) + "/mo" +
-        ((charterCfg().auditMult||1)>1 ? " — elevated for this charter" : ""), "muted") +
-    row("Audits to date", S.stats.complianceAudits) +
-    row("Fines paid lifetime", fmtMoney(S.stats.complianceFines,0), S.stats.complianceFines?"bad":"") +
-    row("Fraud losses lifetime", fmtMoney(S.stats.fraudLossAmt,0) + ` (${S.stats.fraudLossCount})`, S.stats.fraudLossAmt?"bad":""));
 
   const byRegion = {}; for(const rgn of REGIONS) byRegion[rgn] = 0;
   for(const a of S.loans) if(!isDead(a) && a.region) byRegion[a.region] = (byRegion[a.region]||0) + a.balance;
@@ -4693,6 +5039,8 @@ function buildFinancials(){
     row("Student loans", fmtMoney(m.byProd.studentloan,0), null, true) +
     row("Small-business loans", fmtMoney(m.byProd.sbloan,0), null, true) +
     row("Secured cards", fmtMoney(m.byProd.securedcard,0), null, true) +
+    row("BNPL (Pay in 4)", fmtMoney(m.byProd.bnpl,0), null, true) +
+    row("BNPL installment", fmtMoney(m.byProd.bnplplus,0), null, true) +
     row("Allowance for loan losses", "("+fmtMoney(g.allowance,0)+")") +
     row("Net loans", fmtMoney(m.netLoans,0)) +
     row("TOTAL ASSETS", fmtMoney(m.assets,0), "total") +
@@ -4712,7 +5060,7 @@ function buildFinancials(){
 
   const is = isPeriod();
   const nii = is.intLoans + is.intSec - is.intDep - is.intSub - is.intWhole;
-  const fees = is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeService + is.gainSale
+  const fees = is.feeOrig + is.feeLate + is.feeAnnual + is.feeInterchange + is.feeDebit + is.feeMerchant + is.feeService + is.gainSale
              + is.feeWealth + is.grantIncome;
   setHTML("finIS",
     headRow("Interest income") +
@@ -4728,7 +5076,9 @@ function buildFinancials(){
     row("Origination fees", fmtMoney(is.feeOrig,0), null, true) +
     row("Late fees", fmtMoney(is.feeLate,0), null, true) +
     row("Card annual fees", fmtMoney(is.feeAnnual,0), null, true) +
-    row("Interchange", fmtMoney(is.feeInterchange,0), null, true) +
+    row("Credit card interchange", fmtMoney(is.feeInterchange,0), null, true) +
+    row("Debit interchange", fmtMoney(is.feeDebit,0), null, true) +
+    row("BNPL merchant discount fees", fmtMoney(is.feeMerchant,0), null, true) +
     row("Deposit service charges", fmtMoney(is.feeService,0), null, true) +
     row("Net gain (loss) on asset sales", fmtMoney(is.gainSale,0), sign(is.gainSale), true) +
     row("Wealth management advisory fees", fmtMoney(is.feeWealth,0), null, true) +
@@ -4737,6 +5087,11 @@ function buildFinancials(){
     headRow("Non-interest expense") +
     row("Operating expense", "("+fmtMoney(is.opex,0)+")", null, true) +
     row("Marketing", "("+fmtMoney(is.marketing,0)+")", null, true) +
+    row("Branch overhead", "("+fmtMoney(is.branchOpex,0)+")", null, true) +
+    row("Underwriting department", "("+fmtMoney(is.deptUW,0)+")", null, true) +
+    row("Customer service department", "("+fmtMoney(is.deptService,0)+")", null, true) +
+    row("QA department", "("+fmtMoney(is.deptQA,0)+")", null, true) +
+    row("Operational-error losses", "("+fmtMoney(is.opLoss,0)+")", is.opLoss>0?"bad":null, true) +
     row("Fraud losses", "("+fmtMoney(is.fraudLoss,0)+")", is.fraudLoss>0?"bad":null, true) +
     row("Fraud & compliance spend / fines", "("+fmtMoney(is.compliance,0)+")", is.compliance>0?"bad":null, true) +
     row("PRE-TAX INCOME", fmtMoney(preTaxOf(is),0), "total") +
@@ -4936,12 +5291,162 @@ function refreshDev(){
     `<div style="margin-top:10px"><button class="btn sm" id="btnAudit">Re-run audit</button></div>`);
 }
 
+/* ----------------------------- departments ------------------------------ */
+function deptSlider(path, label, budget, hint){
+  return `<label class="field"><span>${label}</span>
+    <input type="range" min="0" max="15000" step="250" data-bind="${path}" data-re="departments" value="${budget}">
+    <span class="hint">Currently <b class="num">${fmtMoney(budget)}</b> per month.${hint?" "+hint:""}</span></label>`;
+}
+function buildDepartments(){
+  const is = S.is.last, d = S.departments;
+  setHTML("dpUW",
+    deptSlider("departments.underwriting.budget", "Loan-officer staffing", d.underwriting.budget,
+      "Diminishing returns — doubling spend doesn't double review capacity.") +
+    `<div class="rule"></div>` +
+    row("Effectiveness", pct(deptEffect("underwriting"))) +
+    row("Manual-review capacity", reviewCapacityPerDay().toFixed(1) + " apps/day") +
+    row("Currently in queue", S.apps.length + " / " + CFG.QUEUE_CAP) +
+    row("Auto-decided by policy default (lifetime)", S.stats.autoDecidedApps, S.stats.autoDecidedApps?"warn":"") +
+    row("Cost last month", fmtMoney(is.deptUW,0)) +
+    `<div class="hint" style="margin-top:6px">Understaffed relative to the queue means applications either pile up
+      until they expire, or get auto-decided by your policy's score midpoint instead of an actual review — not the
+      same as your judgment.</div>`);
+
+  setHTML("dpFraud",
+    deptSlider("departments.fraud.budget", "Fraud & compliance investment", d.fraud.budget,
+      "Zero spend is a legitimate playstyle — you just eat what comes, in fraud losses and audit fines.") +
+    `<div class="rule"></div>` +
+    row("Estimated fraud rate on new originations", pct(fraudRate(),2)) +
+    row("Estimated chance an audit finds a violation", pct(complianceViolationChance(),0)) +
+    row("Audit frequency", pct(CFG.COMPLIANCE_AUDIT_CHANCE*(charterCfg().auditMult||1),1) + "/mo" +
+        ((charterCfg().auditMult||1)>1 ? " — elevated for this charter" : ""), "muted") +
+    row("Audits to date", S.stats.complianceAudits) +
+    row("Fines paid lifetime", fmtMoney(S.stats.complianceFines,0), S.stats.complianceFines?"bad":"") +
+    row("Fraud losses lifetime", fmtMoney(S.stats.fraudLossAmt,0) + ` (${S.stats.fraudLossCount})`, S.stats.fraudLossAmt?"bad":"") +
+    row("Cost last month", fmtMoney(is.compliance,0)));
+
+  const svcEff = deptEffect("service");
+  setHTML("dpService",
+    deptSlider("departments.service.budget", "Customer-service staffing", d.service.budget) +
+    `<div class="hint" style="margin-bottom:8px">Account maintenance fees (the deposit monthly service fee) are the
+      revenue side of this desk — last month they brought in <b>${fmtMoney(is.feeService,0)}</b>. Staffing is the cost
+      side; collecting the fee without staffing the desk is exactly the gap that shows up below.</div>
+     <div class="rule"></div>` +
+    row("Service quality", pct(svcEff)) +
+    row("Reputation contribution", (svcEff>=0.5?"+":"") + ((svcEff-0.5)*10).toFixed(1), sign(svcEff-0.5)) +
+    row("Churn multiplier from staffing", (1+(0.5-svcEff)*0.4).toFixed(2) + "×", svcEff>=0.5?"good":"bad") +
+    row("Cost last month", fmtMoney(is.deptService,0)));
+
+  const qaEff = deptEffect("qa");
+  const opChance = CFG.OP_ERROR_BASE_CHANCE * (1 - qaEff*CFG.OP_ERROR_QA_REDUCTION);
+  setHTML("dpQA",
+    deptSlider("departments.qa.budget", "QA staffing", d.qa.budget,
+      "Operational risk — process failures and human error — distinct from credit, market, and liquidity risk.") +
+    `<div class="rule"></div>` +
+    row("Effectiveness", pct(qaEff)) +
+    row("Operational-error chance this month", pct(opChance,1)) +
+    row("Errors caught before they cost anything", pct(qaEff*CFG.OP_ERROR_QA_REDUCTION)) +
+    row("Operational errors lifetime", S.stats.opErrorCount + " · " + fmtMoney(S.stats.opErrorCost,0), S.stats.opErrorCount?"bad":"") +
+    row("Cost last month", fmtMoney(is.deptQA,0)) +
+    `<div class="hint" style="margin-top:6px">A misapplied payment, a documentation error, a miscalculated statement —
+      QA catches these before they become a fine, a make-good payment, or a reputation ding. It never reaches zero.</div>`);
+}
+
+/* ------------------------------- branches -------------------------------- */
+const BR = { region:"", sort:"region" };
+function branchActivity(){
+  const act = {}; for(const r of REGIONS) act[r] = { customers:0, deposits:0, loans:0 };
+  for(const a of S.loans) if(!isDead(a) && a.region && act[a.region]){ act[a.region].customers++; act[a.region].loans += a.balance; }
+  for(const d of S.depAccts) if(d.status==="open" && d.kind!=="collateral" && d.region && act[d.region]){
+    act[d.region].customers++; act[d.region].deposits += d.balance;
+  }
+  return act;
+}
+function buildBranches(){
+  const act = branchActivity();
+  const hq = CFG.HQ_REGION;
+  setHTML("brHQ",
+    `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div><span class="tag cur" style="font-size:11px">HEADQUARTERS</span>
+        <h3 style="display:inline;margin-left:8px">${hq}</h3></div>
+      <div class="dim">Always staffed · zero overhead · cannot close</div>
+    </div>
+    <div class="rule"></div>` +
+    row("Customers originated here", act[hq].customers) +
+    row("Deposits gathered here", fmtMoney(act[hq].deposits,0)) +
+    row("Loans originated here", fmtMoney(act[hq].loans,0)));
+
+  // regional coverage: every region with activity is visible, even without a branch —
+  // and a region with real activity but no branch is flagged, not hidden
+  let gapsHtml = "";
+  for(const r of REGIONS){
+    if(r === hq) continue;
+    const n = branchCountIn(r);
+    const a = act[r];
+    const hasActivity = a.customers > 5 || a.deposits+a.loans > 50000;
+    const flagged = n === 0 && hasActivity;
+    gapsHtml += row(
+      r + (n>0 ? ` <span class="dim">· ${n} branch${n>1?"es":""}</span>` : ""),
+      n>0 ? `covered` : (hasActivity ? `<b>no branch — real activity, reached indirectly</b>` : `no branch · minimal reach`),
+      n>0 ? "good" : (flagged ? "bad" : "muted"));
+  }
+  setHTML("brGaps", gapsHtml +
+    `<div class="hint" style="margin-top:8px">Every region shows up here, branch or not — marketing and online
+      applicants reach a region even with no physical presence, just at a fraction of what a branch brings. A flagged
+      region has real activity you're not capturing as well as you could.</div>`);
+
+  // filter/sort controls
+  const rf = $("brRegionFilter");
+  if(rf && rf.dataset.for !== "1"){
+    rf.innerHTML = `<option value="">All regions</option>` + REGIONS.map(r=>`<option value="${r}">${r}</option>`).join("");
+    rf.dataset.for = "1";
+  }
+  if(rf) rf.value = BR.region;
+  const so = $("brSort"); if(so) so.value = BR.sort;
+
+  let rows = [];
+  for(const r of REGIONS){
+    for(const b of S.branches.filter(x=>x.region===r)){
+      rows.push({ id:b.id, region:r, opened:b.opened, seq:b.seq,
+        overhead: branchOverhead(r), customers: act[r].customers, deposits: act[r].deposits, loans: act[r].loans });
+    }
+  }
+  if(BR.region) rows = rows.filter(r => r.region === BR.region);
+  const sortKey = { region:"region", deposits:"deposits", loans:"loans", customers:"customers", overhead:"overhead" }[BR.sort] || "region";
+  rows.sort((a,b) => sortKey==="region" ? a.region.localeCompare(b.region) || a.seq-b.seq : b[sortKey]-a[sortKey]);
+
+  setText("brCount", `${rows.length} branch${rows.length===1?"":"es"}`);
+  setHTML("brHead", `<tr><th>Region</th><th>#</th><th>Opened</th><th class="n">Customers</th>
+    <th class="n">Deposits</th><th class="n">Loans</th><th class="n">Overhead/mo</th><th></th></tr>`);
+  if(!rows.length){
+    setHTML("brBody", `<tr><td colspan="8"><div class="empty">No supporting branches yet — open one below in a region with room to grow, or one you've flagged above.</div></td></tr>`);
+  } else {
+    setHTML("brBody", rows.map(r => `<tr>
+      <td>${r.region}</td><td>${r.seq}</td><td>${fmtDate(r.opened)}</td>
+      <td class="n">${r.customers}</td><td class="n">${fmtMoney(r.deposits,0)}</td><td class="n">${fmtMoney(r.loans,0)}</td>
+      <td class="n">${fmtMoney(r.overhead,0)}</td>
+      <td><button class="btn sm" data-close-branch="${r.id}">Close</button></td>
+    </tr>`).join(""));
+  }
+
+  // open-branch controls, one per region with room left
+  const openable = REGIONS.filter(r => r !== hq && branchCountIn(r) < CFG.BRANCH_MAX_PER_REGION);
+  let openHtml = `<div style="display:flex;gap:7px;flex-wrap:wrap">`;
+  for(const r of openable){
+    openHtml += `<button class="btn sm" data-open-branch="${r}">${r} — ${fmtMoney(branchCost(r),0)}</button>`;
+  }
+  openHtml += (openable.length ? "" : `<span class="dim">Every region is at its ${CFG.BRANCH_MAX_PER_REGION}-branch cap.</span>`) + `</div>`;
+  setHTML("brOpenRow", openHtml);
+}
+
 /* ------------------------------ tab plumbing --------------------------- */
 let activeTab = "overview";
 let lastKpi = 0, lastTab = 0, lastFin = 0;
 function buildTab(name){
   if(name === "rates"){ buildRates(); refreshRateMarks(); }
   else if(name === "marketing") buildMarketing();
+  else if(name === "branches") buildBranches();
+  else if(name === "departments") buildDepartments();
   else if(name === "treasury") buildTreasury();
   else if(name === "financials") buildFinancials();
   else if(name === "settings") buildSettings();
@@ -4971,6 +5476,8 @@ function renderTick(now){
     else if(t === "portfolio"){ if(DIRTY.portfolio){ renderPortfolio(); DIRTY.portfolio = false; } }
     else if(t === "rates"){ refreshRateMarks(); }
     else if(t === "marketing"){ if(!panelBusy("marketing")) buildMarketing(); }
+    else if(t === "branches"){ if(!panelBusy("branches")) buildBranches(); }
+    else if(t === "departments"){ if(!panelBusy("departments")) buildDepartments(); }
     else if(t === "treasury"){ if(!panelBusy("treasury")) buildTreasury(); }
     else if(t === "settings"){ if(!panelBusy("settings")) refreshDev(); }
     else if(t === "financials" && now - lastFin > 900){ lastFin = now; buildFinancials(); }
@@ -5183,6 +5690,22 @@ function wire(){
       if(scope === "loan") applyLoanRatePreset(key); else applyDepositRatePreset(key);
       return;
     }
+    const openBr = e.target.closest("button[data-open-branch]");
+    if(openBr && !S.over){
+      const region = openBr.dataset.openBranch, cost = branchCost(region);
+      if(confirm(`Open a branch in ${region} for ${fmtMoney(cost,0)}, plus ${fmtMoney(branchOverhead(region),0)}/mo overhead? This unlocks fuller reach into ${region}'s applicant and deposit pool.`))
+        openBranch(region);
+      buildBranches();
+      return;
+    }
+    const closeBr = e.target.closest("button[data-close-branch]");
+    if(closeBr && !S.over){
+      const b = S.branches.find(x=>x.id===+closeBr.dataset.closeBranch);
+      if(b && confirm(`Close the branch in ${b.region}? Overhead stops immediately; the region's reach falls back toward indirect/online levels.`))
+        closeBranch(+closeBr.dataset.closeBranch);
+      buildBranches();
+      return;
+    }
     const repayBtn = e.target.closest("button[data-repay]");
     if(repayBtn && !S.over){
       const i = +repayBtn.dataset.repay, w = S.capital.wholesale[i];
@@ -5309,6 +5832,8 @@ function wire(){
     if(e.target.id === "trSecType"){ TR.secType = e.target.value; buildTreasury(); return; }
     if(e.target.id === "trSecDuration"){ TR.secDuration = e.target.value; buildTreasury(); return; }
     if(e.target.id === "trSecClass"){ TR.secClass = e.target.value; buildTreasury(); return; }
+    if(e.target.id === "brRegionFilter"){ BR.region = e.target.value; buildBranches(); return; }
+    if(e.target.id === "brSort"){ BR.sort = e.target.value; buildBranches(); return; }
     if(e.target.id === "setPauseBlur"){ S.pauseOnBlur = e.target.checked; saveGame(); }
     if(e.target.id === "setReprice"){
       S.macro.repriceMonths = +e.target.value;

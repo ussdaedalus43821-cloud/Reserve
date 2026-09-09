@@ -880,7 +880,14 @@ const CFG = {
 
   // --- departments: budget -> effectiveness follows the same diminishing-
   // returns curve fraud & compliance already used (effectiveness = spend/(spend+half)) ---
-  DEPT_HALF: { underwriting:6000, fraud:6000, service:5000, qa:5000 },
+  // Underwriting's half sits well below the others: the slider tops out at
+  // $15,000/mo for every department, and at half=6000 that only bought
+  // 71.4% effectiveness — a player maxing out the spend they're allowed to
+  // make was still getting less than three-quarters of what full staffing
+  // would do. 1650 gets max spend to ~90%, so paying the ceiling price
+  // actually buys something close to fully staffed, not just "better than
+  // nothing."
+  DEPT_HALF: { underwriting:1650, fraud:6000, service:5000, qa:5000 },
   UW_BASE_CAPACITY: 3, UW_MAX_CAPACITY_ADD: 14,   // reviewable apps/day, zero spend -> fully staffed
   OP_ERROR_BASE_CHANCE: 0.05,      // monthly chance of an operational-error event at zero QA spend
   OP_ERROR_QA_REDUCTION: 0.85,     // max share of that chance a fully-staffed QA function removes

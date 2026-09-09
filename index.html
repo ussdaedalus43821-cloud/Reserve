@@ -576,6 +576,10 @@ pre.devdump{background:#151b23;border:1px solid #2a333f;border-radius:6px;paddin
         <div class="body" id="brGaps"></div>
       </div>
       <div class="card" style="margin-bottom:12px">
+        <h3>Competing banks</h3>
+        <div class="body" id="brCompetitors"></div>
+      </div>
+      <div class="card" style="margin-bottom:12px">
         <div class="toolbar">
           <select id="brRegionFilter"><option value="">All regions</option></select>
           <select id="brSort">
@@ -873,13 +877,24 @@ const CFG = {
   CROSS_SELL_CHURN_MULT: 0.6,     // multi-product customers churn at 60% of the single-product rate
 
   // --- branch network ------------------------------------------------------
-  HQ_REGION: "Northside",
+  HQ_REGION: "Downtown",
   BRANCH_BASE_COST: 250000, BRANCH_COST_STEP: 0.6,          // +60% cost per existing branch in that region
   BRANCH_BASE_OVERHEAD: 6000, BRANCH_OVERHEAD_STEP: 0.4,
   BRANCH_MAX_PER_REGION: 3,
   NO_BRANCH_REGION_WEIGHT: 0.18,  // applicant/deposit weight a branchless region still gets (indirect/online reach)
   PER_BRANCH_WEIGHT: 0.35,        // added regional weight per branch there, before diminishing-returns clamp
   BRANCH_REGION_WEIGHT_MAX: 1.3,
+
+  // --- competitor banks: named, visible rivals with their own regional
+  // footprint and a slowly-drifting size — not a physical presence you fight
+  // directly, but a real, named thing on the map instead of an anonymous event
+  COMPETITOR_COUNT: 5,
+  COMPETITOR_REGIONS_MIN: 2, COMPETITOR_REGIONS_MAX: 4,
+  COMPETITOR_SIZE_MIN_MULT: 0.4, COMPETITOR_SIZE_MAX_MULT: 2.2,  // vs. your own starting assets
+  COMPETITOR_MIN_ASSETS: 500000,
+  COMPETITOR_GROWTH_DRIFT: 0.012,        // monthly baseline size drift (stdev)
+  COMPETITOR_ECON_SENSITIVITY: 0.006,    // extra drift toward/away from growth in boom/recession
+  COMPETITOR_PRESSURE_PER_BRANCH: 0.004, // monthly growth dampening per your branch in a region they share
 
   // --- departments: budget -> effectiveness follows the same diminishing-
   // returns curve fraud & compliance already used (effectiveness = spend/(spend+half)) ---
@@ -980,7 +995,13 @@ const RATE_FIXED = { bnpl:true };
 const TERMS = { personal:[24,36,48,60], auto:[48,60,72], mortgage:[360],
                 studentloan:CFG.STUDENT_TERMS, sbloan:CFG.SB_TERMS,
                 bnpl:[CFG.BNPL_TERM_MONTHS], bnplplus:[6,12,18,24] };
-const REGIONS = ["Northside","Riverfront","Old Mill","Eastgate","Lakeview","Highland"];
+const REGIONS = ["Downtown","Riverfront","Old Mill","Eastgate","Lakeview","Highland",
+                 "Southbank","Ironwood","Fairview","Crescent Park","Union Square","Brookhaven"];
+// pool for makeCompetitors() — plain bank-style names, distinct from the
+// customer FIRST/LAST name generator so a rival never reads like a person
+const COMPETITOR_NAME_POOL = ["First Meridian Bank","Union Trust & Savings","Ridgeline Bank",
+  "Harbor Community Bank","Prairie State Bank","Crestview Financial","Anchor Point Bank",
+  "Cornerstone Federal","Northgate Bankshares","Ledger & Co. Bank","Wayfarer Trust","Beacon Hill Savings"];
 const SEC_TYPES = ["treasury","agency","muni","corporate"];
 const SEC_TYPE_LABEL = { treasury:"Treasuries", agency:"Agency MBS", muni:"Municipal bonds", corporate:"Corporate bonds" };
 const SEC_DURATIONS = ["short","medium","long"];
@@ -1247,6 +1268,7 @@ function newGame(bankName, charterKey){
   // charter starts at the same 4.25% rate). Force a real recompute here.
   _mCache = null; _mCacheV = -1; _mCacheRate = null;
   seedDeposits(ch.deposits);
+  S.competitors = makeCompetitors(ch);
   logEvent("Charter granted. " + fmtMoney(ch.capital) + " of paid-in capital on deposit at the Fed.", "ok");
   bumpAll();
   return S;
@@ -1568,6 +1590,42 @@ function totalBranchOverhead(){
   let n = 0;
   for(const r of REGIONS) n += branchOverhead(r) * S.branches.filter(b=>b.region===r).length;
   return n;
+}
+
+/* ============================= competitors ===============================
+   Named rival banks, each with their own regional footprint and a slowly
+   drifting size — visible on the map, not a mechanic you fight directly yet.
+   Seeded once per game (or once, retroactively, for an older save) and then
+   only ever adjusted in place by updateCompetitors(); nothing here touches
+   the player's own ledger.
+   ===================================================================== */
+function makeCompetitors(ch){
+  const pool = COMPETITOR_NAME_POOL.slice();
+  const baseAssets = ch.capital + ch.deposits;
+  const n = Math.min(CFG.COMPETITOR_COUNT, pool.length);
+  const out = [];
+  for(let i=0;i<n;i++){
+    const name = pool.splice(Math.floor(rnd()*pool.length), 1)[0];
+    const regionPool = REGIONS.slice();
+    const regionCount = Math.min(regionPool.length, rint(CFG.COMPETITOR_REGIONS_MIN, CFG.COMPETITOR_REGIONS_MAX));
+    const regions = [];
+    for(let j=0;j<regionCount;j++) regions.push(regionPool.splice(Math.floor(rnd()*regionPool.length), 1)[0]);
+    const sizeMult = rrange(CFG.COMPETITOR_SIZE_MIN_MULT, CFG.COMPETITOR_SIZE_MAX_MULT);
+    out.push({ id: i+1, name, regions, assets: Math.round(baseAssets*sizeMult) });
+  }
+  return out;
+}
+function updateCompetitors(){
+  if(!S.competitors) return;
+  const econTilt = S.macro.econ === "recession" ? -1 : S.macro.econ === "boom" ? 1 : 0;
+  for(const c of S.competitors){
+    let growth = CFG.COMPETITOR_ECON_SENSITIVITY*econTilt + CFG.COMPETITOR_GROWTH_DRIFT*randn();
+    // real branch presence in a region they also operate in is genuine,
+    // ongoing competitive pressure — not a one-off event
+    for(const r of c.regions) growth -= CFG.COMPETITOR_PRESSURE_PER_BRANCH * branchCountIn(r);
+    growth = clamp(growth, -0.06, 0.06);
+    c.assets = Math.max(CFG.COMPETITOR_MIN_ASSETS, Math.round(c.assets * (1+growth)));
+  }
 }
 
 /* ============================= departments ==============================
@@ -3473,7 +3531,13 @@ function triggerHousingEvent(){
 }
 function triggerCompetitorEvent(){
   S.events.competitor = { until: S.day + CFG.EVT_COMPETITOR_MONTHS*CFG.DAYS_PER_MONTH };
-  logEvent(`A rival institution stumbles — customers are shopping around. Expect a temporary lift in applicants and deposit inflow, independent of your own reputation.`, "ok");
+  const rival = S.competitors && S.competitors.length ? pick(S.competitors) : null;
+  if(rival){
+    S.events.competitor.rivalId = rival.id;
+    logEvent(`${rival.name} stumbles — a compliance scandal, or just a bad quarter. Customers in ${rival.regions.join(", ")} are shopping around. Expect a temporary lift in applicants and deposit inflow there, independent of your own reputation.`, "ok");
+  } else {
+    logEvent(`A rival institution stumbles — customers are shopping around. Expect a temporary lift in applicants and deposit inflow, independent of your own reputation.`, "ok");
+  }
 }
 function triggerRateShockEvent(dir){
   const move = rrange(CFG.EVT_RATESHOCK_MIN, CFG.EVT_RATESHOCK_MAX) * (dir === "down" ? -1 : dir === "up" ? 1 : (rnd()<0.5?-1:1));
@@ -3729,6 +3793,7 @@ function monthClose(){
 
   updateMacro();
   rollMacroEvents();
+  updateCompetitors();
   S.rep = clamp(S.rep + (reputationTarget() - S.rep)*0.18, 0, 100);
 
   const mm = M();
@@ -4195,8 +4260,18 @@ function adoptState(obj){
     obj.depAccts = unpackRows(obj.depAccts || [], DEP_F);
     obj.securities = unpackRows(obj.securities || [], SEC_F);
   }
+  // HQ's region name changed ("Northside" -> CFG.HQ_REGION); the place
+  // didn't, so remap every stored reference — otherwise an old save's HQ
+  // activity is keyed to a name nothing recognizes as HQ anymore
+  for(const a of obj.loans||[]) if(a.region === "Northside") a.region = CFG.HQ_REGION;
+  for(const d of obj.depAccts||[]) if(d.region === "Northside") d.region = CFG.HQ_REGION;
+  if(obj.policy && obj.policy.regionTarget === "Northside") obj.policy.regionTarget = CFG.HQ_REGION;
+  if(obj.events && obj.events.layoff && obj.events.layoff.region === "Northside") obj.events.layoff.region = CFG.HQ_REGION;
   S = obj;
   S.speed = 0;                       // always resume paused
+  // older saves predate competitor banks entirely — seed them retroactively
+  // rather than leaving a returning player with an empty map forever
+  if(!S.competitors || !S.competitors.length) S.competitors = makeCompetitors(CHARTERS[S.charter] || CHARTERS.community);
   LEDGER_ERRORS = [];
   _mv++;
   reconcileDetail();
@@ -6198,8 +6273,10 @@ function buildBranches(){
     const a = act[r];
     const hasActivity = a.customers > 5 || a.deposits+a.loans > 50000;
     const flagged = n === 0 && hasActivity;
+    const rivals = (S.competitors||[]).filter(c => c.regions.includes(r)).map(c => c.name);
+    const rivalNote = rivals.length ? ` <span class="dim">· ${esc(rivals.join(", "))} ${rivals.length>1?"operate":"operates"} here</span>` : "";
     gapsHtml += row(
-      r + (n>0 ? ` <span class="dim">· ${n} branch${n>1?"es":""}</span>` : ""),
+      r + (n>0 ? ` <span class="dim">· ${n} branch${n>1?"es":""}</span>` : "") + rivalNote,
       n>0 ? `covered` : (hasActivity ? `<b>no branch — real activity, reached indirectly</b>` : `no branch · minimal reach`),
       n>0 ? "good" : (flagged ? "bad" : "muted"));
   }
@@ -6207,6 +6284,18 @@ function buildBranches(){
     `<div class="hint" style="margin-top:8px">Every region shows up here, branch or not — marketing and online
       applicants reach a region even with no physical presence, just at a fraction of what a branch brings. A flagged
       region has real activity you're not capturing as well as you could.</div>`);
+
+  const myAssets = M().assets;
+  setHTML("brCompetitors", !S.competitors || !S.competitors.length ? `<div class="empty">No known rivals.</div>` :
+    S.competitors.map(c => {
+      const ratio = myAssets > 0 ? c.assets/myAssets : 0;
+      const sizeNote = ratio >= 1 ? `≈${ratio.toFixed(1)}× your size` : `≈${Math.round(ratio*100)}% your size`;
+      return row(`<b>${esc(c.name)}</b> <span class="dim">· ${esc(c.regions.join(", "))}</span>`,
+        `${fmtCompact(c.assets)} <span class="dim">(${sizeNote})</span>`);
+    }).join("") +
+    `<div class="hint" style="margin-top:8px">Rivals grow and shrink on their own, faster in a boom and slower in a
+      recession — real branch presence in a region they also operate in puts steady, ongoing pressure on them there.
+      There's no direct way to act on them beyond that yet.</div>`);
 
   // filter/sort controls
   const rf = $("brRegionFilter");

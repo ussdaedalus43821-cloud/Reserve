@@ -303,6 +303,7 @@ table.rates input{text-align:right;padding:3px 5px;font-size:12px}
 .runbanner .btn{background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.4);color:#fff}
 .restrict{background:var(--warn);color:#1b1408;padding:6px 14px;font-size:12.5px;font-weight:500}
 .ledgerbar{background:var(--bad);color:#fff;padding:4px 14px;font-size:11px;font-family:var(--mono)}
+.savebar{background:var(--warn);color:#1b1408;padding:4px 14px;font-size:11px;font-weight:500}
 .devbar{background:#0a0e14;color:#7ee08c;padding:4px 14px;font-size:11px;font-family:var(--mono);
   letter-spacing:.02em;border-bottom:1px solid #1c2530}
 /* Developer Mode reads as a debug console, deliberately unlike the rest of
@@ -397,6 +398,7 @@ pre.devdump{background:#151b23;border:1px solid #2a333f;border-radius:6px;paddin
       <div class="kpi"><div class="k">Net income (MTD)</div><div class="v" id="kpiNI">—</div><div class="s" id="kpiNISub">&nbsp;</div></div>
     </div>
     <div id="ledgerBar" class="ledgerbar hidden"></div>
+    <div id="saveBar" class="savebar hidden"></div>
     <div id="devBar" class="devbar hidden"></div>
     <div id="restrictBar" class="restrict hidden"></div>
     <div id="runBanner" class="runbanner hidden"></div>
@@ -3995,6 +3997,16 @@ function reconcileDetail(){
     post({ grossLoans:dL, deposits:dD, securities:dS, retained:dL + dS - dD }, "load-rounding");
 }
 let saveWarned = false;
+// A one-shot toast is easy to miss on a phone — Safari on iOS in particular
+// throws on every single localStorage write in Private Browsing (or with
+// site data blocked), silently failing every autosave for the rest of the
+// session after that first toast disappears. saveHealth is a persistent,
+// glanceable state instead: a bar stays up in the header for as long as
+// saves keep failing, and clears the moment one actually succeeds again.
+let saveHealth = { ok: true, reason: null };
+function quotaLike(e){
+  return e && (e.name === "QuotaExceededError" || e.code === 22 || e.code === 1014);
+}
 function saveGame(){
   let json;
   try{
@@ -4002,21 +4014,42 @@ function saveGame(){
     if(json.length > CFG.SAVE_BUDGET) json = JSON.stringify(packState(true));
     localStorage.setItem(SAVE_KEY, json);
     S.lastSaved = Date.now(); S.saveBytes = json.length; saveWarned = false;
+    saveHealth = { ok: true, reason: null };
     return true;
   }catch(e){
     try{
       json = JSON.stringify(packState(true));
       localStorage.setItem(SAVE_KEY, json);
       S.lastSaved = Date.now(); S.saveBytes = json.length;
+      saveHealth = { ok: true, reason: null };
       return true;
     }catch(e2){
+      // a real "save got too big" is fixable by shedding more; anything else
+      // (Private Browsing, blocked site data, storage disabled outright)
+      // isn't something this page can work around — only exporting can help
+      saveHealth = { ok: false, reason: quotaLike(e2) ? "quota" : "unavailable" };
       if(!saveWarned){
         saveWarned = true;
-        toast("Autosave failed", "Browser storage is full or unavailable. The game keeps running, but progress will not persist — export a save from Settings.", "warn");
+        toast("Autosave failed", saveHealth.reason === "quota"
+          ? "The save is too large for this browser's storage limit. Progress will not persist — export a save from Settings."
+          : "Browser storage is unavailable — this is common in Safari Private Browsing, or with site data blocked. Progress will not persist — export a save from Settings before closing.",
+          "warn");
       }
       return false;
     }
   }
+}
+// A tiny write-read-remove at boot, before any real game data exists, so a
+// browsing mode that can't save at all (Private Browsing is the common
+// case on iOS Safari) is caught immediately — not discovered 20 simulated
+// days into a session when the first autosave silently fails.
+function storageSelfTest(){
+  try{
+    const k = "reserve.storage.test";
+    localStorage.setItem(k, "1");
+    localStorage.removeItem(k);
+    return true;
+  }catch(e){ return false; }
 }
 // Saves predate the capital-actions update; fill in anything they lack.
 function migrate(o){
@@ -4305,6 +4338,14 @@ function renderHeader(){
     lb.classList.remove("hidden");
     lb.textContent = `LEDGER DRIFT: A - L - E = ${m.identityDrift.toFixed(4)} · ${LEDGER_ERRORS.length} unbalanced entr${LEDGER_ERRORS.length===1?"y":"ies"} (see Settings › Developer)`;
   } else lb.classList.add("hidden");
+
+  const sb = $("saveBar");
+  if(!saveHealth.ok){
+    sb.classList.remove("hidden");
+    sb.textContent = saveHealth.reason === "quota"
+      ? "⚠ Autosave failing — the save is too large for this browser. Export a save from Settings before closing."
+      : "⚠ Autosave failing — this browser isn't allowing saves right now (common in Safari Private Browsing). Export a save from Settings before closing.";
+  } else sb.classList.add("hidden");
 
   const db = $("devBar");
   if(S.devMode){
@@ -6837,6 +6878,10 @@ function wire(){
     const th = localStorage.getItem("reserve.theme");
     if(th) document.documentElement.dataset.theme = th;
   }catch(e){}
+  if(!storageSelfTest()){
+    saveHealth = { ok: false, reason: "unavailable" };
+    saveWarned = true;   // the header bar covers this from the first render — no need for the toast too
+  }
   wire();
   if(loadGame()){
     setTab("overview");

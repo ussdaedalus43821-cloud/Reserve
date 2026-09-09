@@ -640,6 +640,10 @@ pre.devdump{background:#151b23;border:1px solid #2a333f;border-radius:6px;paddin
       <div class="grid">
         <div class="card"><h3>Loan portfolio sale</h3><div class="body" id="trSale"></div></div>
       </div>
+      <div class="grid g2">
+        <div class="card"><h3>Acquire a loan portfolio</h3><div class="body" id="trAcqLoan"></div></div>
+        <div class="card"><h3>Acquire a deposit book</h3><div class="body" id="trAcqDep"></div></div>
+      </div>
     </section>
 
     <!-- ============ FINANCIALS ============ -->
@@ -895,6 +899,13 @@ const CFG = {
   COMPETITOR_GROWTH_DRIFT: 0.012,        // monthly baseline size drift (stdev)
   COMPETITOR_ECON_SENSITIVITY: 0.006,    // extra drift toward/away from growth in boom/recession
   COMPETITOR_PRESSURE_PER_BRANCH: 0.004, // monthly growth dampening per your branch in a region they share
+
+  // --- buying a portfolio from a competitor (the mirror of selling your own) ---
+  ACQ_MIN_AMOUNT: 25000,
+  ACQ_MAX_SHARE_OF_RIVAL: 0.35,     // can't strip more than this much of one rival in a single deal
+  ACQ_LOAN_PREMIUM_BASE: 0.05,      // paid on top of funding the book — franchise value of a seasoned book
+  ACQ_DEPOSIT_PREMIUM_BASE: 0.04,
+  ACQ_ECON_ADJ: 0.02,               // deals get cheaper in a recession (distressed sellers), pricier in a boom
 
   // --- departments: budget -> effectiveness follows the same diminishing-
   // returns curve fraud & compliance already used (effectiveness = spend/(spend+half)) ---
@@ -1153,7 +1164,8 @@ function blankCapital(){
            borrowCount: 0, depSaleCount: 0, depSoldAmt: 0, depPremium: 0, ownershipPct: 1,
            cocoConversions: 0, cocoConverted: 0, bailoutReceived: 0,
            dividends: 0, lineCuts: 0, linesCut: 0, saleCount: 0, saleProceeds: 0, saleLoss: 0,
-           founderCapacity: 0, founderCapacityMax: 0, founderInvested: 0, founderCount: 0 };
+           founderCapacity: 0, founderCapacityMax: 0, founderInvested: 0, founderCount: 0,
+           acqLoanCount: 0, acqLoanAmt: 0, acqDepCount: 0, acqDepAmt: 0 };
 }
 function netIncomeOf(is){
   return is.intLoans + is.intSec - is.intDep - is.intSub - is.intWhole - is.intInterbank - is.provision
@@ -3414,6 +3426,98 @@ function sellLoans(product, share){
   return true;
 }
 
+/* ========================= buying from a competitor =======================
+   The mirror of sellLoans()/sellDeposits(): instead of you handing paper to
+   an anonymous buyer, a named rival hands (a slice of) theirs to you, for a
+   premium instead of a discount. Booked through the exact same bookCredit()/
+   makeDepositAccount() paths as any other account, so it can never desync
+   the ledger the way a one-off "just add $X to grossLoans" would.
+   Cards are excluded — a freshly created card starts undrawn (balance 0)
+   same as any other new card, so there's nothing there yet to buy.
+   ===================================================================== */
+function econAcqAdj(){
+  return S.macro.econ === "recession" ? -CFG.ACQ_ECON_ADJ : S.macro.econ === "boom" ? CFG.ACQ_ECON_ADJ*0.75 : 0;
+}
+function acquireLoanQuote(rival, product, share){
+  if(!rival) return { ok:false, why:"No rival selected." };
+  if(REVOLVING[product] && product !== "heloc")
+    return { ok:false, why:"Credit cards can't be bought outright — a freshly acquired card starts undrawn, same as any other new card." };
+  const amount = Math.round(rival.assets*clamp(share, 0, CFG.ACQ_MAX_SHARE_OF_RIVAL));
+  if(amount < CFG.ACQ_MIN_AMOUNT) return { ok:false, why:`That's under the ${fmtMoney(CFG.ACQ_MIN_AMOUNT)} minimum deal size.` };
+  const cap = capacityCheck(product, amount);
+  if(!cap.ok) return { ok:false, why:cap.why };
+  const prem = clamp(CFG.ACQ_LOAN_PREMIUM_BASE + econAcqAdj(), 0.01, 0.15);
+  return { ok:true, amount, prem, cost: Math.round(amount*(1+prem)) };
+}
+function acquireLoans(rivalId, product, share){
+  if(S.over) return false;
+  const rival = (S.competitors||[]).find(c => c.id === rivalId);
+  const q = acquireLoanQuote(rival, product, share);
+  if(!q.ok){ toast("Cannot acquire", q.why, "bad"); return false; }
+  if(!ensureCash(q.cost)){
+    toast("Cannot acquire", `The deal costs ${fmtMoney(q.cost)} and the cash isn't there.`, "bad");
+    return false;
+  }
+  let built = 0, n = 0, guard = 0;
+  while(built < q.amount*0.95 && guard++ < 300){
+    const remaining = q.amount - built;
+    if(remaining < CFG.ACQ_MIN_AMOUNT*0.15) break;
+    const app = makeApplication(product);
+    app.amount = Math.min(app.amount, Math.max(500, remaining));
+    app.payment = monthlyObligation(product, app.amount, app.apr, app.term);
+    if(!capacityCheck(product, app.amount).ok) break;
+    bookCredit(app, { apr: app.apr, amount: app.amount, term: app.term });
+    built += app.amount; n++;
+  }
+  if(built <= 0){ toast("Cannot acquire", "Ran out of lending capacity before booking anything.", "bad"); return false; }
+  const premium = Math.round(built*q.prem);
+  if(ensureCash(premium)) post({ cash:-premium, retained:-premium }, "loan-acquisition-premium");
+  acc("gainSale", -premium);
+  rival.assets = Math.max(CFG.COMPETITOR_MIN_ASSETS, rival.assets - built);
+  S.capital.acqLoanCount++; S.capital.acqLoanAmt += built;
+  logEvent(`Acquired ${fmtMoney(built)} of ${PRODUCT_LABEL[product].toLowerCase()}s (${n} accounts) from ${rival.name} — ${fmtMoney(premium)} premium on top of funding the book.`, "info");
+  toast("Portfolio acquired", `${fmtMoney(built)} added to the book from ${rival.name}.`, "ok");
+  bumpAll(); saveGame();
+  return true;
+}
+function acquireDepositQuote(rival, kind, share){
+  if(!rival) return { ok:false, why:"No rival selected." };
+  const amount = Math.round(rival.assets*clamp(share, 0, CFG.ACQ_MAX_SHARE_OF_RIVAL));
+  if(amount < CFG.ACQ_MIN_AMOUNT) return { ok:false, why:`That's under the ${fmtMoney(CFG.ACQ_MIN_AMOUNT)} minimum deal size.` };
+  const prem = clamp(CFG.ACQ_DEPOSIT_PREMIUM_BASE + econAcqAdj(), 0.01, 0.12);
+  return { ok:true, amount, prem, premium: Math.round(amount*prem), cashIn: Math.round(amount*(1-prem)) };
+}
+function acquireDeposits(rivalId, kind, share){
+  if(S.over) return false;
+  const rival = (S.competitors||[]).find(c => c.id === rivalId);
+  const q = acquireDepositQuote(rival, kind, share);
+  if(!q.ok){ toast("Cannot acquire", q.why, "bad"); return false; }
+  let built = 0, guard = 0;
+  const regionPool = rival.regions.length ? rival.regions : REGIONS;
+  while(built < q.amount*0.97 && guard++ < 2000){
+    const remaining = q.amount - built;
+    if(remaining < 500) break;
+    let amt = Math.min(remaining, Math.exp(8.4 + 1.1*randn()));
+    if(remaining - amt < 500) amt = remaining;
+    amt = Math.max(250, Math.round(amt));
+    const name = randomName(), region = pick(regionPool), custId = S.nextId++;
+    const a = makeDepositAccount(name, kind, amt, false, kind === "cd" ? pick(CFG.CD_TERMS) : null, region, custId);
+    S.depAccts.push(a);
+    registerCustomerProduct(custId, { name, score:680, income:60000, region, tier:"C" });
+    built += amt;
+  }
+  if(built <= 0){ toast("Cannot acquire", "Nothing came of that deal.", "bad"); return false; }
+  const premium = Math.round(built*q.prem);
+  post({ cash: built-premium, deposits: built, retained: -premium }, "deposit-acquisition");
+  acc("gainSale", -premium);
+  rival.assets = Math.max(CFG.COMPETITOR_MIN_ASSETS, rival.assets - built);
+  S.capital.acqDepCount++; S.capital.acqDepAmt += built;
+  logEvent(`Acquired ${fmtMoney(built)} of ${kind} deposits from ${rival.name} — ${fmtMoney(premium)} premium paid, ${fmtMoney(built-premium)} of net cash in.`, "info");
+  toast("Deposit book acquired", `${fmtMoney(built)} of deposits added from ${rival.name}.`, "ok");
+  bumpAll(); saveGame();
+  return true;
+}
+
 /* ============================== game over ============================== */
 function gameOver(cause, detail){
   if(S.over) return false;
@@ -5263,7 +5367,11 @@ function buildMarketing(){
 const TR = { lineThresh: 30, saleProduct: "card", saleShare: 20,
              wholeTerm: 6, depSaleKind: "savings", depSaleShare: 25,
              ibTerm: 7, cocoTrigger: CFG.COCO_TRIGGER_DEFAULT*100,
-             secType: "treasury", secDuration: "short", secClass: "afs" };
+             secType: "treasury", secDuration: "short", secClass: "afs",
+             acqRivalId: null, acqLoanProduct: "personal", acqLoanShare: 15,
+             acqDepKind: "savings", acqDepShare: 15 };
+// products worth buying outright — cards excluded, see acquireLoanQuote()
+const ACQ_LOAN_PRODUCTS = PRODUCTS.filter(p => !REVOLVING[p] || p === "heloc");
 
 function buildTreasury(){
   const m = M(), L = limits(false);
@@ -5557,6 +5665,7 @@ function buildTreasury(){
     row("Lifetime sale proceeds", fmtMoney(S.capital.saleProceeds,0), "muted"));
   updateSalePreview();
 
+  buildAcquisitions();
   buildInterbank();
   buildCoco();
   buildRegSupport();
@@ -5579,6 +5688,77 @@ function updateSalePreview(){
        <b>${fmtCompact(q.proceeds)}</b> in cash at a <b>${pct(q.disc)}</b> discount, freeing roughly
        <b>${fmtCompact(q.rwaFreed)}</b> of risk-weighted assets.`
     : `Nothing to sell in that portfolio.`;
+}
+
+function acqRival(){
+  const list = S.competitors || [];
+  if(!list.length) return null;
+  if(TR.acqRivalId == null || !list.some(c => c.id === TR.acqRivalId)) TR.acqRivalId = list[0].id;
+  return list.find(c => c.id === TR.acqRivalId);
+}
+function buildAcquisitions(){
+  const list = S.competitors || [];
+  if(!list.length){
+    setHTML("trAcqLoan", `<div class="empty">No known rivals to buy from.</div>`);
+    setHTML("trAcqDep", `<div class="empty">No known rivals to buy from.</div>`);
+    return;
+  }
+  const rival = acqRival();
+  const rivalOpts = list.map(c => `<option value="${c.id}"${c.id===TR.acqRivalId?" selected":""}>${esc(c.name)} · ${fmtCompact(c.assets)}</option>`).join("");
+
+  const lq = acquireLoanQuote(rival, TR.acqLoanProduct, TR.acqLoanShare/100);
+  setHTML("trAcqLoan",
+    `<div class="hint" style="margin-bottom:9px">The mirror of selling: a named rival hands you a slice of their
+      book instead of an anonymous buyer taking yours. You fund it like any other origination, plus a premium on
+      top for the franchise — cards aren't offered here since a freshly booked card starts undrawn either way.</div>` +
+    `<div style="display:flex;gap:8px">
+      <label class="field" style="flex:1"><span>Rival</span>
+        <select id="trAcqRival1">${rivalOpts}</select></label>
+      <label class="field" style="flex:1"><span>Product</span>
+        <select id="trAcqLoanProduct">${ACQ_LOAN_PRODUCTS.map(p=>`<option value="${p}"${p===TR.acqLoanProduct?" selected":""}>${PRODUCT_LABEL[p]}</option>`).join("")}</select></label>
+    </div>
+    <label class="field" style="margin-top:8px"><span>Share of their book <b id="trAcqLoanShareV">${TR.acqLoanShare}%</b>
+      <span class="dim">(cap ${pct(CFG.ACQ_MAX_SHARE_OF_RIVAL,0)} per deal)</span></span>
+      <input type="range" id="trAcqLoanShare" min="5" max="${Math.round(CFG.ACQ_MAX_SHARE_OF_RIVAL*100)}" step="5" value="${TR.acqLoanShare}"></label>
+    <div class="hint" id="trAcqLoanPreview" style="margin-top:6px"></div>
+    <button class="btn" id="btnAcqLoan" style="margin-top:9px;width:100%" ${lq.ok?"":"disabled"}>Acquire portfolio</button>` +
+    (S.capital.acqLoanCount ? `<div class="hint" style="margin-top:6px">${S.capital.acqLoanCount} deal${S.capital.acqLoanCount===1?"":"s"} · ${fmtCompact(S.capital.acqLoanAmt||0)} acquired.</div>` : ""));
+
+  const dq = acquireDepositQuote(rival, TR.acqDepKind, TR.acqDepShare/100);
+  setHTML("trAcqDep",
+    `<div class="hint" style="margin-bottom:9px">Take over a slice of a rival's depositors — you pay a premium
+      for the franchise, but the balances themselves fund with cash, same as any other deposit opening.</div>` +
+    `<div style="display:flex;gap:8px">
+      <label class="field" style="flex:1"><span>Rival</span>
+        <select id="trAcqRival2">${rivalOpts}</select></label>
+      <label class="field" style="flex:1"><span>Book</span>
+        <select id="trAcqDepKind">${["checking","savings","cd"].map(k=>`<option value="${k}"${k===TR.acqDepKind?" selected":""}>${k==="cd"?"12-month CD":k}</option>`).join("")}</select></label>
+    </div>
+    <label class="field" style="margin-top:8px"><span>Share of their book <b id="trAcqDepShareV">${TR.acqDepShare}%</b>
+      <span class="dim">(cap ${pct(CFG.ACQ_MAX_SHARE_OF_RIVAL,0)} per deal)</span></span>
+      <input type="range" id="trAcqDepShare" min="5" max="${Math.round(CFG.ACQ_MAX_SHARE_OF_RIVAL*100)}" step="5" value="${TR.acqDepShare}"></label>
+    <div class="hint" id="trAcqDepPreview" style="margin-top:6px"></div>
+    <button class="btn" id="btnAcqDep" style="margin-top:9px;width:100%" ${dq.ok?"":"disabled"}>Acquire deposit book</button>` +
+    (S.capital.acqDepCount ? `<div class="hint" style="margin-top:6px">${S.capital.acqDepCount} deal${S.capital.acqDepCount===1?"":"s"} · ${fmtCompact(S.capital.acqDepAmt||0)} acquired.</div>` : ""));
+
+  updateAcqLoanPreview();
+  updateAcqDepPreview();
+}
+function updateAcqLoanPreview(){
+  const el = $("trAcqLoanPreview"); if(!el) return;
+  const q = acquireLoanQuote(acqRival(), TR.acqLoanProduct, TR.acqLoanShare/100);
+  el.innerHTML = q.ok
+    ? `About <b>${fmtCompact(q.amount)}</b> of ${PRODUCT_LABEL[TR.acqLoanProduct].toLowerCase()}s, funded plus a
+       <b>${pct(q.prem)}</b> premium — <b>${fmtCompact(q.cost)}</b> total cash out.`
+    : `<span style="color:var(--bad)">${q.why}</span>`;
+}
+function updateAcqDepPreview(){
+  const el = $("trAcqDepPreview"); if(!el) return;
+  const q = acquireDepositQuote(acqRival(), TR.acqDepKind, TR.acqDepShare/100);
+  el.innerHTML = q.ok
+    ? `About <b>${fmtCompact(q.amount)}</b> of ${TR.acqDepKind} deposits, at a <b>${pct(q.prem)}</b> premium —
+       <b>${fmtCompact(q.premium)}</b> paid, <b>${fmtCompact(q.cashIn)}</b> net cash in.`
+    : `<span style="color:var(--bad)">${q.why}</span>`;
 }
 
 function updateFounderPreview(){
@@ -6580,6 +6760,20 @@ function wire(){
       updateSalePreview();
       return;
     }
+    if(e.target.id === "trAcqLoanShare"){
+      TR.acqLoanShare = +e.target.value;
+      setText("trAcqLoanShareV", TR.acqLoanShare + "%");
+      updateAcqLoanPreview();
+      const b = $("btnAcqLoan"); if(b) b.disabled = !acquireLoanQuote(acqRival(), TR.acqLoanProduct, TR.acqLoanShare/100).ok;
+      return;
+    }
+    if(e.target.id === "trAcqDepShare"){
+      TR.acqDepShare = +e.target.value;
+      setText("trAcqDepShareV", TR.acqDepShare + "%");
+      updateAcqDepPreview();
+      const b = $("btnAcqDep"); if(b) b.disabled = !acquireDepositQuote(acqRival(), TR.acqDepKind, TR.acqDepShare/100).ok;
+      return;
+    }
     if(e.target.matches("input[type=range][data-bind]")){
       const el = e.target;
       let v = parseFloat(el.value);
@@ -6660,6 +6854,24 @@ function wire(){
     }
     if(id === "btnSecBuy"){
       if(!S.over) buySecurityLot(+$("trSecBuy").value, TR.secType, TR.secDuration, TR.secClass);
+      buildTreasury();
+      return;
+    }
+    if(id === "btnAcqLoan"){
+      if(!S.over){
+        const rival = acqRival(), q = acquireLoanQuote(rival, TR.acqLoanProduct, TR.acqLoanShare/100);
+        if(q.ok && confirm(`Acquire about ${fmtCompact(q.amount)} of ${PRODUCT_LABEL[TR.acqLoanProduct].toLowerCase()}s from ${rival.name} for ${fmtCompact(q.cost)}?`))
+          acquireLoans(rival.id, TR.acqLoanProduct, TR.acqLoanShare/100);
+      }
+      buildTreasury();
+      return;
+    }
+    if(id === "btnAcqDep"){
+      if(!S.over){
+        const rival = acqRival(), q = acquireDepositQuote(rival, TR.acqDepKind, TR.acqDepShare/100);
+        if(q.ok && confirm(`Acquire about ${fmtCompact(q.amount)} of ${TR.acqDepKind} deposits from ${rival.name}? You pay a ${fmtCompact(q.premium)} premium and net ${fmtCompact(q.cashIn)} of cash.`))
+          acquireDeposits(rival.id, TR.acqDepKind, TR.acqDepShare/100);
+      }
       buildTreasury();
       return;
     }
@@ -6918,6 +7130,10 @@ function wire(){
     if(e.target.id === "trIbTerm"){ TR.ibTerm = +e.target.value; buildTreasury(); return; }
     if(e.target.id === "trDepKind"){ TR.depSaleKind = e.target.value; buildTreasury(); return; }
     if(e.target.id === "trDepShare"){ TR.depSaleShare = +e.target.value; buildTreasury(); return; }
+    if(e.target.id === "trAcqRival1"){ TR.acqRivalId = +e.target.value; buildAcquisitions(); return; }
+    if(e.target.id === "trAcqRival2"){ TR.acqRivalId = +e.target.value; buildAcquisitions(); return; }
+    if(e.target.id === "trAcqLoanProduct"){ TR.acqLoanProduct = e.target.value; buildAcquisitions(); return; }
+    if(e.target.id === "trAcqDepKind"){ TR.acqDepKind = e.target.value; buildAcquisitions(); return; }
     if(e.target.id === "trSecType"){ TR.secType = e.target.value; buildTreasury(); return; }
     if(e.target.id === "trSecDuration"){ TR.secDuration = e.target.value; buildTreasury(); return; }
     if(e.target.id === "trSecClass"){ TR.secClass = e.target.value; buildTreasury(); return; }

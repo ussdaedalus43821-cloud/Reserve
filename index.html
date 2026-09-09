@@ -2177,17 +2177,15 @@ function processCredit(a){
       a.balance += spend; a.lifeFees += ic;
     }
   }
-  // --- interest accrual (non-accrual once 90+ days past due) ------------
-  let interest = 0;
+  // Interest itself already accrued daily, continuously, in
+  // accrueDailyInterest() — a.balance already reflects it. This is a
+  // same-shape estimate purely to size the revolving minimum payment
+  // below; it is never posted here (posting it again would double-count).
   const accrues = a.missed < 3 && (!isRevolving || a.revolver || a.balance > 0 && a.missed > 0);
-  if(accrues && a.balance > 0){
-    interest = a.balance*mrate;
-    income("intLoans", interest, { grossLoans:interest, retained:interest }, "interest-accrual");
-    a.balance += interest; a.lifeInterest += interest; S.stats.lifetimeInterest += interest;
-    // deferment: payments pause, but interest keeps accruing and capitalizing —
-    // the loan quietly grows before it is ever actually delinquent
-    if(a.product === "studentloan" && a.deferred) return;
-  }
+  const interest = accrues ? a.balance*mrate : 0;
+  // deferment: payments pause, but interest keeps accruing and capitalizing —
+  // the loan quietly grows before it is ever actually delinquent
+  if(a.product === "studentloan" && a.deferred) return;
   if(isCardLike && a.balance <= 0 && a.missed === 0) return;   // idle card, nothing to collect
 
   // --- payment behaviour -------------------------------------------------
@@ -2253,12 +2251,7 @@ function processDepositAccount(d){
   // locked, non-interest-bearing secured-card collateral — sits until the
   // card closes or graduates, immune to drift, fees and attrition alike
   if(d.kind === "collateral") return true;
-  const apy = d.kind === "cd" ? d.apy : effectiveDepAPY(d.kind);
-  const interest = d.balance*apy/1200;
-  if(interest > 0){
-    income("intDep", interest, { deposits:interest, retained:-interest }, "deposit-interest");
-    d.balance += interest;
-  }
+  // interest itself already accrued daily, continuously, in accrueDailyInterest()
   if(d.kind !== "cd" && S.fees.depMonthly > 0 && d.balance > S.fees.depMonthly*3){
     const f = S.fees.depMonthly;
     income("feeService", f, { deposits:-f, retained:f }, "service-fee");
@@ -2437,14 +2430,6 @@ function processSecurityCredit(){
     }
   }
 }
-function accrueSecuritiesIncome(){
-  for(const lot of S.securities){
-    if(lot.status !== "open") continue;
-    const si = lot.bookValue*lot.couponRate/1200;   // the coupon is fixed at purchase, not today's rate
-    income("intSec", si, { cash:si, retained:si }, "securities-interest");
-  }
-}
-
 function treasuryOps(){
   const m = M();
   // unwind securities if liquidity is getting thin
@@ -2458,7 +2443,6 @@ function treasuryOps(){
       buySecurityLot(excess, p.type, p.duration, p.classification);
     }
   }
-  accrueSecuritiesIncome();
   maturitySecurities();
   processSecurityCredit();
 }
@@ -3830,9 +3814,45 @@ function processUnderwritingBacklog(){
   DIRTY.apps = true;
 }
 
+// Interest accrues daily, continuously, the way real interest actually
+// works — unlike payment collection, delinquency aging, opex, and
+// department spend, which are genuinely monthly-cadence business events
+// and stay batched in monthClose(). Splitting this out is what makes the
+// "month to date" income statement actually build up day by day instead
+// of sitting at $0 until the last day of the month, when everything
+// interest-related used to land in one lump sum.
+function accrueDailyInterest(){
+  for(let i=0;i<S.loans.length;i++){
+    const a = S.loans[i];
+    if(isDead(a)) continue;
+    const isRevolving = !!REVOLVING[a.product];
+    // mirrors processCredit()'s own non-accrual gate exactly (90+ DPD stops
+    // accruing) — a.missed/a.revolver only change once a month, in
+    // processCredit() itself, so re-checking this daily is safe and correct
+    const accrues = a.missed < 3 && (!isRevolving || a.revolver || a.balance > 0 && a.missed > 0);
+    if(accrues && a.balance > 0){
+      const daily = a.balance*(a.apr/1200)/CFG.DAYS_PER_MONTH;
+      income("intLoans", daily, { grossLoans:daily, retained:daily }, "interest-accrual");
+      a.balance += daily; a.lifeInterest += daily; S.stats.lifetimeInterest += daily;
+    }
+  }
+  for(let i=0;i<S.depAccts.length;i++){
+    const d = S.depAccts[i];
+    if(d.status !== "open" || d.kind === "collateral") continue;
+    const apy = d.kind === "cd" ? d.apy : effectiveDepAPY(d.kind);
+    const daily = d.balance*(apy/1200)/CFG.DAYS_PER_MONTH;
+    if(daily > 0){ income("intDep", daily, { deposits:daily, retained:-daily }, "deposit-interest"); d.balance += daily; }
+  }
+  for(const lot of S.securities){
+    if(lot.status !== "open") continue;
+    const daily = lot.bookValue*(lot.couponRate/1200)/CFG.DAYS_PER_MONTH;   // coupon fixed at purchase, not today's rate
+    if(daily > 0) income("intSec", daily, { cash:daily, retained:daily }, "securities-interest");
+  }
+}
 function stepDay(){
   if(S.over) return;
   S.day++;
+  accrueDailyInterest();
 
   // --- new applications --------------------------------------------------
   const n = poisson(arrivalRate());

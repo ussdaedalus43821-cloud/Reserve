@@ -717,8 +717,8 @@ pre.devdump{background:#151b23;border:1px solid #2a333f;border-radius:6px;paddin
 
    Architecture notes
    ------------------
-   * `S` is the entire game state and is the only thing serialised to
-     localStorage. Everything else is derived on demand.
+   * `S` is the entire game state and is the only thing persisted, to
+     IndexedDB. Everything else is derived on demand.
    * All balance-sheet movement goes through `post()`, which is double-entry:
      it refuses to let Assets - Liabilities - Equity drift from zero and
      records any violation for the developer panel.
@@ -937,7 +937,6 @@ const CFG = {
   RATE_REPRICE_MONTHS: 12,   // how often the policy rate is re-set
   MAX_HISTORY: 720, MAX_LOG: 120, MAX_DECISIONS: 60,
   PRUNE_AFTER_DAYS: 180,     // dead accounts older than this are dropped entirely
-  SAVE_BUDGET: 4000000,      // bytes; past this the save sheds closed accounts
 
   // --- CD laddering -------------------------------------------------------
   CD_TERMS: [3, 6, 12, 24, 60],           // months on offer
@@ -3261,29 +3260,42 @@ function devJumpTime(days, onDone){
   })();
 }
 const QSAVE_SLOTS = 3;
-function qsaveKey(slot){ return "reserve.bank.qsave."+slot; }
-function devQuicksave(slot){
+function qsaveKey(slot){ return "qsave."+slot; }
+// Quickslot info is rendered synchronously inside a big HTML-string build
+// (buildDevConsole()), but IndexedDB reads are async — so slot summaries
+// live in this small cache instead: populated once at boot and kept current
+// by devQuicksave() itself, rather than re-read from IDB on every render.
+let qsaveCache = {};
+function slotSummary(wrapper){
+  const g = wrapper.state.gl;
+  return { savedAt: wrapper.savedAt, day: wrapper.state.day, bankName: wrapper.state.bankName,
+           assets: (g.cash||0) + (g.grossLoans||0) - (g.allowance||0) + (g.securities||0) };
+}
+async function refreshQsaveCache(){
+  for(let i=1;i<=QSAVE_SLOTS;i++){
+    try{
+      const w = await idbGet(qsaveKey(i));
+      qsaveCache[i] = w ? slotSummary(w) : null;
+    }catch(e){ qsaveCache[i] = null; }
+  }
+}
+async function devQuicksave(slot){
   try{
-    localStorage.setItem(qsaveKey(slot), JSON.stringify({ savedAt: Date.now(), state: packState(false) }));
+    const wrapper = { savedAt: Date.now(), state: packState(false) };
+    await idbSet(qsaveKey(slot), wrapper);
+    qsaveCache[slot] = slotSummary(wrapper);
     return true;
   }catch(e){ return false; }
 }
-function devQuickload(slot){
+async function devQuickload(slot){
   try{
-    const raw = localStorage.getItem(qsaveKey(slot));
-    if(!raw) return false;
-    return adoptState(JSON.parse(raw).state);
+    const wrapper = await idbGet(qsaveKey(slot));
+    if(!wrapper) return false;
+    return adoptState(wrapper.state);
   }catch(e){ return false; }
 }
 function devQuickslotInfo(slot){
-  try{
-    const raw = localStorage.getItem(qsaveKey(slot));
-    if(!raw) return null;
-    const w = JSON.parse(raw);
-    const g = w.state.gl;
-    return { savedAt: w.savedAt, day: w.state.day, bankName: w.state.bankName,
-             assets: (g.cash||0) + (g.grossLoans||0) - (g.allowance||0) + (g.securities||0) };
-  }catch(e){ return null; }
+  return qsaveCache[slot] || null;
 }
 // A heavier, on-demand pass beyond the always-visible header readout —
 // the closest a static single-file game gets to the external chaos/
@@ -4112,12 +4124,58 @@ function stepDay(){
 
 /* ============================== persistence =============================
    A long session can reach tens of thousands of accounts, which is far more
-   than localStorage will hold as plain JSON. Accounts are therefore stored as
-   positional arrays (no repeated key names) with money rounded to cents. The
-   rounding is reconciled back through the ledger on load, so the balance sheet
-   still balances to the cent after a reload.
+   than localStorage reliably holds — it's a synchronous, string-only API
+   with a practical ceiling of a few MB per origin (tighter still on iOS
+   Safari), and a save built from thousands of open accounts can sail past
+   that. IndexedDB is the fix: a structured, asynchronous store with a
+   practical quota that scales with free disk space instead, easily orders
+   of magnitude bigger. Accounts are still stored as positional arrays (no
+   repeated key names) with money rounded to cents — less data is still
+   faster to write and easier on memory even with a much bigger ceiling.
+   The rounding is reconciled back through the ledger on load, so the
+   balance sheet still balances to the cent after a reload.
    ======================================================================== */
-const SAVE_KEY = "reserve.bank.save.v1";
+const IDB_NAME = "reserve-bank-db", IDB_VERSION = 1, IDB_STORE = "saves";
+const SAVE_KEY = "main";
+let _idbPromise = null;
+function openIdb(){
+  if(_idbPromise) return _idbPromise;
+  _idbPromise = new Promise((resolve, reject) => {
+    if(!window.indexedDB){ reject(new Error("indexedDB unavailable")); return; }
+    const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+    req.onupgradeneeded = () => {
+      if(!req.result.objectStoreNames.contains(IDB_STORE)) req.result.createObjectStore(IDB_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return _idbPromise;
+}
+function idbGet(key){
+  return openIdb().then(db => new Promise((resolve, reject) => {
+    const req = db.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  }));
+}
+function idbSet(key, value){
+  return openIdb().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    tx.objectStore(IDB_STORE).put(value, key);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  }));
+}
+function idbDelete(key){
+  return openIdb().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    tx.objectStore(IDB_STORE).delete(key);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  }));
+}
 const LOAN_F = ["id","name","product","tier","score","opened","apr","income","dti","status",
   "missed","lifeInterest","lifeFees","secured","lastPay","limit","balance","term","revolver",
   "spendRate","nextAnnual","principal","remaining","payment","closedDay","closeWhy","region",
@@ -4127,6 +4185,13 @@ const DEP_F = ["id","name","kind","balance","apy","maturity","opened","status","
   "closedDay","closeWhy","term","region","custId"];
 const SEC_F = ["id","type","duration","classification","bookValue","couponRate","opened",
   "maturity","status","closedDay","closeWhy"];
+// custIndex is keyed by custId at runtime (S.custIndex[id] -> profile) but
+// packs down to the same positional-array shape as loans/deposits/securities
+// for storage — it grows one entry per unique relationship, which at scale
+// is a large, mostly-redundant echo of data already sitting in the account
+// rows themselves (name/score/income/region/tier), so it's worth shrinking
+// the same way.
+const CUST_F = ["custId","count","name","score","income","region","tier"];
 const ROUND_TO = { balance:2, apr:2, dti:4, income:0, payment:2, lifeInterest:2, lifeFees:2,
                    spendRate:4, beta:4, drift:6, apy:3, principal:2, guaranteedPct:4, helocMargin:4,
                    bookValue:2, couponRate:3 };
@@ -4152,7 +4217,8 @@ function packState(dropDead){
   const deps  = dropDead ? S.depAccts.filter(d => d.status === "open") : S.depAccts;
   const secs  = dropDead ? S.securities.filter(l => l.status === "open") : S.securities;
   return Object.assign({}, S, { _p:1, _dropped: !!dropDead,
-    loans: packRows(loans, LOAN_F), depAccts: packRows(deps, DEP_F), securities: packRows(secs, SEC_F) });
+    loans: packRows(loans, LOAN_F), depAccts: packRows(deps, DEP_F), securities: packRows(secs, SEC_F),
+    custIndex: packRows(Object.values(S.custIndex), CUST_F) });
 }
 // Rounding to cents moves the account detail a fraction away from the ledger
 // aggregates; book the difference as a real (tiny) entry rather than let the
@@ -4168,8 +4234,8 @@ function reconcileDetail(){
 }
 let saveWarned = false;
 // A one-shot toast is easy to miss on a phone — Safari on iOS in particular
-// throws on every single localStorage write in Private Browsing (or with
-// site data blocked), silently failing every autosave for the rest of the
+// can reject IndexedDB writes outright in Private Browsing (or with site
+// data blocked), silently failing every autosave for the rest of the
 // session after that first toast disappears. saveHealth is a persistent,
 // glanceable state instead: a bar stays up in the header for as long as
 // saves keep failing, and clears the moment one actually succeeds again.
@@ -4177,47 +4243,56 @@ let saveHealth = { ok: true, reason: null };
 function quotaLike(e){
   return e && (e.name === "QuotaExceededError" || e.code === 22 || e.code === 1014);
 }
-function saveGame(){
-  let json;
+// Saves happen off the main flow entirely now — every one of the ~60 call
+// sites just fires saveGame() and moves on, none of them wait on the result,
+// so making this async (real IndexedDB writes are never instant) needed no
+// changes anywhere else. saveInFlight coalesces bursts: at 15x speed a
+// single animation frame can cross several day%20==0 boundaries at once,
+// which used to mean several redundant full-state writes back to back.
+let saveInFlight = false;
+async function saveGame(){
+  if(!S || saveInFlight) return false;
+  saveInFlight = true;
   try{
-    json = JSON.stringify(packState(false));
-    if(json.length > CFG.SAVE_BUDGET) json = JSON.stringify(packState(true));
-    localStorage.setItem(SAVE_KEY, json);
-    S.lastSaved = Date.now(); S.saveBytes = json.length; saveWarned = false;
+    const packed = packState(false);
+    await idbSet(SAVE_KEY, packed);
+    S.lastSaved = Date.now(); S.saveBytes = JSON.stringify(packed).length; saveWarned = false;
     saveHealth = { ok: true, reason: null };
     return true;
   }catch(e){
     try{
-      json = JSON.stringify(packState(true));
-      localStorage.setItem(SAVE_KEY, json);
-      S.lastSaved = Date.now(); S.saveBytes = json.length;
+      // a real "still too big" is fixable by shedding recently-closed
+      // accounts that haven't hit the routine prune yet; anything else
+      // (Private Browsing, blocked site data, storage disabled outright)
+      // isn't something this page can work around — only exporting can help
+      const packed = packState(true);
+      await idbSet(SAVE_KEY, packed);
+      S.lastSaved = Date.now(); S.saveBytes = JSON.stringify(packed).length; saveWarned = false;
       saveHealth = { ok: true, reason: null };
       return true;
     }catch(e2){
-      // a real "save got too big" is fixable by shedding more; anything else
-      // (Private Browsing, blocked site data, storage disabled outright)
-      // isn't something this page can work around — only exporting can help
       saveHealth = { ok: false, reason: quotaLike(e2) ? "quota" : "unavailable" };
       if(!saveWarned){
         saveWarned = true;
         toast("Autosave failed", saveHealth.reason === "quota"
-          ? "The save is too large for this browser's storage limit. Progress will not persist — export a save from Settings."
+          ? "This browser's storage is full. Progress will not persist — export a save from Settings."
           : "Browser storage is unavailable — this is common in Safari Private Browsing, or with site data blocked. Progress will not persist — export a save from Settings before closing.",
           "warn");
       }
       return false;
     }
+  } finally {
+    saveInFlight = false;
   }
 }
 // A tiny write-read-remove at boot, before any real game data exists, so a
 // browsing mode that can't save at all (Private Browsing is the common
 // case on iOS Safari) is caught immediately — not discovered 20 simulated
 // days into a session when the first autosave silently fails.
-function storageSelfTest(){
+async function storageSelfTest(){
   try{
-    const k = "reserve.storage.test";
-    localStorage.setItem(k, "1");
-    localStorage.removeItem(k);
+    await idbSet("__selftest__", 1);
+    await idbDelete("__selftest__");
     return true;
   }catch(e){ return false; }
 }
@@ -4364,6 +4439,14 @@ function adoptState(obj){
     obj.depAccts = unpackRows(obj.depAccts || [], DEP_F);
     obj.securities = unpackRows(obj.securities || [], SEC_F);
   }
+  // custIndex packing was versioned independently of _p (it's a later change) —
+  // an array means packed (unpack it), anything else is an older save where it
+  // was always stored as a plain {custId: profile} object, still valid as-is
+  if(Array.isArray(obj.custIndex)){
+    const ci = {};
+    for(const c of unpackRows(obj.custIndex, CUST_F)) if(c.custId != null) ci[c.custId] = c;
+    obj.custIndex = ci;
+  }
   // HQ's region name changed ("Northside" -> CFG.HQ_REGION); the place
   // didn't, so remap every stored reference — otherwise an old save's HQ
   // activity is keyed to a name nothing recognizes as HQ anymore
@@ -4382,14 +4465,14 @@ function adoptState(obj){
   bumpAll();
   return true;
 }
-function loadGame(){
+async function loadGame(){
   try{
-    const raw = localStorage.getItem(SAVE_KEY);
-    if(!raw) return false;
-    return adoptState(JSON.parse(raw));
+    const packed = await idbGet(SAVE_KEY);
+    if(!packed) return false;
+    return adoptState(packed);
   }catch(e){ return false; }
 }
-function clearSave(){ try{ localStorage.removeItem(SAVE_KEY); }catch(e){} }
+function clearSave(){ return idbDelete(SAVE_KEY).catch(()=>{}); }
 
 /* =============================== game loop ============================== */
 let lastT = 0;
@@ -4529,7 +4612,7 @@ function renderHeader(){
   if(!saveHealth.ok){
     sb.classList.remove("hidden");
     sb.textContent = saveHealth.reason === "quota"
-      ? "⚠ Autosave failing — the save is too large for this browser. Export a save from Settings before closing."
+      ? "⚠ Autosave failing — this device's storage is full. Export a save from Settings before closing."
       : "⚠ Autosave failing — this browser isn't allowing saves right now (common in Safari Private Browsing). Export a save from Settings before closing.";
   } else sb.classList.add("hidden");
 
@@ -6094,12 +6177,13 @@ function buildSettings(){
     row("Months closed", S.history.length));
 
   setHTML("setSave",
-    `<div class="hint" style="margin-bottom:9px">The game autosaves to this browser every 20 simulated days and
-      whenever you make a decision. Saves resume paused.</div>` +
+    `<div class="hint" style="margin-bottom:9px">The game autosaves to this device's storage every 20 simulated
+      days, every 2 minutes of real time regardless of speed or pause, and whenever you make a decision — stored in
+      IndexedDB, which scales to a large fraction of your free disk space rather than the few MB a browser gives a
+      page's plain local storage. Saves resume paused.</div>` +
     row("Last autosave", S.lastSaved ? new Date(S.lastSaved).toLocaleTimeString() : "not yet") +
     row("Save size", S.saveBytes ? (S.saveBytes/1024).toFixed(0)+" KB" : "not yet written") +
-    row("Accounts stored", (S.loans.length + S.depAccts.length).toLocaleString("en-US") +
-        (S.saveBytes > CFG.SAVE_BUDGET*0.95 ? " (closed accounts shed to fit)" : "")) +
+    row("Accounts stored", (S.loans.length + S.depAccts.length).toLocaleString("en-US")) +
     `<div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:11px">
       <button class="btn" id="btnSaveNow">Save now</button>
       <button class="btn" id="btnExport">Export save</button>
@@ -6994,16 +7078,22 @@ function wire(){
     }
     const qs = e.target.closest("[data-qsave]");
     if(qs){
-      devQuicksave(+qs.dataset.qsave);
-      toast("Developer Mode", `Saved to slot ${qs.dataset.qsave}.`, "ok");
-      buildSettings(); return;
+      devQuicksave(+qs.dataset.qsave).then(ok => {
+        toast("Developer Mode", ok ? `Saved to slot ${qs.dataset.qsave}.` : "Quicksave failed.", ok?"ok":"bad");
+        buildSettings();
+      });
+      return;
     }
     const ql = e.target.closest("[data-qload]");
     if(ql){
       if(confirm("Load this quicksave? The current, unsaved state in this slot's place will be lost.")){
-        if(devQuickload(+ql.dataset.qload)){ toast("Developer Mode", "Quickload complete.", "ok"); setTab("overview"); }
+        devQuickload(+ql.dataset.qload).then(ok => {
+          if(ok){ toast("Developer Mode", "Quickload complete.", "ok"); setTab("overview"); }
+          else toast("Developer Mode", "Nothing in that slot.", "warn");
+          buildSettings();
+        });
       }
-      buildSettings(); return;
+      return;
     }
     const el2 = e.target.closest("[data-econlock]");
     if(el2){
@@ -7107,7 +7197,13 @@ function wire(){
       toast("Developer Mode", ok ? "VIP booked." : "VIP application declined.", ok?"ok":"warn");
       buildSettings(); return;
     }
-    if(e.target.id === "btnSaveNow"){ saveGame(); toast("Saved", "Game state written to browser storage.", "ok"); buildSettings(); return; }
+    if(e.target.id === "btnSaveNow"){
+      saveGame().then(ok => {
+        toast(ok ? "Saved" : "Save failed", ok ? "Game state written to this device's storage." : "See the warning bar for why.", ok?"ok":"bad");
+        buildSettings();
+      });
+      return;
+    }
     if(e.target.id === "btnExport"){
       const blob = new Blob([JSON.stringify(packState(false))], { type:"application/json" });
       const a = document.createElement("a");
@@ -7185,17 +7281,17 @@ function wire(){
 }
 
 /* --------------------------------- boot -------------------------------- */
-(function boot(){
+(async function boot(){
   try{
     const th = localStorage.getItem("reserve.theme");
     if(th) document.documentElement.dataset.theme = th;
   }catch(e){}
-  if(!storageSelfTest()){
+  if(!(await storageSelfTest())){
     saveHealth = { ok: false, reason: "unavailable" };
     saveWarned = true;   // the header bar covers this from the first render — no need for the toast too
   }
   wire();
-  if(loadGame()){
+  if(await loadGame()){
     setTab("overview");
     if(S.reg.pendingForbearance) showForbearanceModal();
     else toast("Welcome back", `${S.bankName}, ${fmtDate(S.day)}. Resumed paused — press space or 1× to continue.`, "ok");
@@ -7205,6 +7301,7 @@ function wire(){
     setTab("overview");
     showNewBank();
   }
+  refreshQsaveCache();
   requestAnimationFrame(loop);
 })();
 </script>

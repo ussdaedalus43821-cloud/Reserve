@@ -722,6 +722,7 @@ pre.devdump{background:#151b23;border:1px solid #2a333f;border-radius:6px;paddin
 /* ============================ configuration ============================ */
 const CFG = {
   SEC_PER_DAY: 2.5,          // real seconds per simulated day at 1x
+  AUTOSAVE_MS: 120000,       // wall-clock safety-net autosave interval (real time, not sim time)
   DAYS_PER_MONTH: 30,
   MONTHS_PER_YEAR: 12,
   REQ_RESERVE: 0.10,         // cash / deposits floor
@@ -4222,6 +4223,12 @@ function loop(now){
     let steps = 0;
     while(S.dayAcc >= 1 && steps < 90){ S.dayAcc -= 1; stepDay(); steps++; if(S.over) break; }
   }
+  // Real-time safety-net autosave: the day-count autosave inside stepDay()
+  // only fires while simulated time is advancing, so a long stretch spent
+  // paused — reviewing the applications queue, tuning policy, just reading —
+  // could otherwise go unsaved indefinitely even with the tab open the whole
+  // time. This fires purely off the wall clock instead, regardless of speed.
+  if(S && !S.over && Date.now() - (S.lastSaved || 0) > CFG.AUTOSAVE_MS) saveGame();
   renderTick(now);
   requestAnimationFrame(loop);
 }

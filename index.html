@@ -2160,23 +2160,8 @@ function processCredit(a){
       a.balance += f; a.lifeFees += f; a.nextAnnual += 360;
     }
   }
-  // --- card-like: spending on the line, with a holiday-season seasonal lift ---
-  if(isCardLike && a.missed === 0){
-    const room = Math.max(0, a.limit - a.balance);
-    const dm = dateParts(S.day).m;   // 0-indexed month; 10-11 = Nov/Dec
-    const seasonal = (dm === 10 || dm === 11) ? 1.35 : dm === 0 ? 0.85 : 1;
-    let spend = Math.min(room, a.limit * a.spendRate * seasonal * (0.6 + 0.8*rnd()));
-    if(S.macro.econ === "recession") spend *= 0.85;
-    else if(S.macro.econ === "boom") spend *= 1.1;
-    // the bank has to fund the draw: it cannot spend itself through the reserve floor
-    spend = Math.min(spend, Math.max(0, S.gl.cash - CFG.REQ_RESERVE*(S.gl.deposits + S.gl.wholesale)));
-    spend = Math.round(spend);
-    if(spend > 0){
-      const ic = Math.round(spend*0.015);      // interchange, net of the merchant payout
-      income("feeInterchange", ic, { cash:-(spend-ic), grossLoans:spend, retained:ic }, "card-spend");
-      a.balance += spend; a.lifeFees += ic;
-    }
-  }
+  // card spend/interchange now accrues daily, in accrueDailyFees() — same
+  // reason as interest: customers spend continuously, not once a month
   // Interest itself already accrued daily, continuously, in
   // accrueDailyInterest() — a.balance already reflects it. This is a
   // same-shape estimate purely to size the revolving minimum payment
@@ -2257,13 +2242,8 @@ function processDepositAccount(d){
     income("feeService", f, { deposits:-f, retained:f }, "service-fee");
     d.balance -= f;
   }
-  // debit interchange: a small cut of checking-account spend activity, distinct
-  // from credit-card interchange — scales with the checking book, not a flat fee
-  if(d.kind === "checking" && d.balance > 0){
-    const volume = d.balance * CFG.DEBIT_TURNOVER * (0.7 + 0.6*rnd());
-    const ic = volume * CFG.DEBIT_INTERCHANGE_RATE;
-    if(ic > 0) income("feeDebit", ic, { cash:ic, retained:ic }, "debit-interchange");
-  }
+  // debit interchange now accrues daily, in accrueDailyFees() — checking
+  // accounts get spent against continuously, not once a month
   // a small, rare chance a CD holder needs the cash before maturity —
   // longer terms can't be pulled by a run, but a customer can still break one
   if(d.kind === "cd" && S.day < d.maturity && rnd() < 0.0012) return breakCDEarly(d);
@@ -3849,10 +3829,45 @@ function accrueDailyInterest(){
     if(daily > 0) income("intSec", daily, { cash:daily, retained:daily }, "securities-interest");
   }
 }
+// Card and debit interchange are transaction-based, not interest — but the
+// same problem applied: both only ever posted once a month, in the monthly
+// batch, so "month to date" sat at $0 for both, all month, same as interest
+// used to. Customers actually spend continuously, so this splits the same
+// monthly spend/turnover math across the days it actually happens over.
+function accrueDailyFees(){
+  for(let i=0;i<S.loans.length;i++){
+    const a = S.loans[i];
+    if(isDead(a)) continue;
+    const isCardLike = a.product === "card" || a.product === "securedcard";
+    if(!isCardLike || a.missed !== 0) continue;
+    const room = Math.max(0, a.limit - a.balance);
+    const dm = dateParts(S.day).m;   // 0-indexed month; 10-11 = Nov/Dec
+    const seasonal = (dm === 10 || dm === 11) ? 1.35 : dm === 0 ? 0.85 : 1;
+    let spend = Math.min(room, a.limit * a.spendRate * seasonal * (0.6 + 0.8*rnd()) / CFG.DAYS_PER_MONTH);
+    if(S.macro.econ === "recession") spend *= 0.85;
+    else if(S.macro.econ === "boom") spend *= 1.1;
+    // the bank has to fund the draw: it cannot spend itself through the reserve floor
+    spend = Math.min(spend, Math.max(0, S.gl.cash - CFG.REQ_RESERVE*(S.gl.deposits + S.gl.wholesale)));
+    spend = Math.round(spend);
+    if(spend > 0){
+      const ic = Math.round(spend*0.015);      // interchange, net of the merchant payout
+      income("feeInterchange", ic, { cash:-(spend-ic), grossLoans:spend, retained:ic }, "card-spend");
+      a.balance += spend; a.lifeFees += ic;
+    }
+  }
+  for(let i=0;i<S.depAccts.length;i++){
+    const d = S.depAccts[i];
+    if(d.status !== "open" || d.kind !== "checking" || d.balance <= 0) continue;
+    const volume = d.balance * CFG.DEBIT_TURNOVER * (0.7 + 0.6*rnd()) / CFG.DAYS_PER_MONTH;
+    const ic = volume * CFG.DEBIT_INTERCHANGE_RATE;
+    if(ic > 0) income("feeDebit", ic, { cash:ic, retained:ic }, "debit-interchange");
+  }
+}
 function stepDay(){
   if(S.over) return;
   S.day++;
   accrueDailyInterest();
+  accrueDailyFees();
 
   // --- new applications --------------------------------------------------
   const n = poisson(arrivalRate());

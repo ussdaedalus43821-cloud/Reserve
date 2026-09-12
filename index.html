@@ -830,6 +830,10 @@ const CFG = {
   LGD: { mortgage:0.25, auto:0.45, personal:0.85, card:0.90,
          heloc:0.35, studentloan:0.75, sbloan:0.65, securedcard:0.05,
          bnpl:0.90, bnplplus:0.85 },
+  // recessions don't just default more accounts — collateral and recovery
+  // values fall too, so every default costs more while one is on. Applies
+  // on top of the housing event's own (mortgage/HELOC-only) severity hit.
+  RECESSION_LGD_MULT: 1.35,
 
   // annualised probability of default by credit tier (base case)
   PD: { A:0.003, B:0.008, C:0.020, D:0.060, E:0.150 },
@@ -839,9 +843,16 @@ const CFG = {
   // "normal" sits a little below the raw 1.0x baseline on purpose — most of
   // a run is spent here, so this is the one number that decides whether
   // ordinary, uneventful play compounds into real growth or just treads
-  // water between the recession/boom swings. Recession severity (2.5x) and
-  // boom's advantage (0.6x) are both untouched.
-  MACRO_PD: { recession:2.5, normal:0.85, boom:0.6 },
+  // water between the recession/boom swings.
+  MACRO_PD: { recession:3.5, normal:0.85, boom:0.6 },
+  // Economic-cycle Markov chain (evaluated once a month in updateMacro()):
+  // from normal, a monthly roll under ECON_TO_RECESSION flips to recession,
+  // the next band up to ECON_TO_BOOM flips to boom; recession/boom exit back
+  // to normal at their own monthly rate (1/rate = average months in that
+  // state). Recession's exit rate is deliberately lower than boom's — a
+  // downturn a player can just wait out isn't much of a lesson in reserves.
+  ECON_TO_RECESSION: 0.030, ECON_TO_BOOM: 0.030,
+  ECON_RECESSION_EXIT: 0.075, ECON_BOOM_EXIT: 0.105,
   CURE: { secured:0.34, unsecured:0.26 },   // monthly probability a delinquent account cures
   CHARGEOFF_AT: 4,           // missed payments before charge-off (120 DPD)
 
@@ -1019,18 +1030,27 @@ const SEC_DURATION_LABEL = { short:"Short (~1–2yr)", medium:"Medium (~5–7yr)
 
 // spread over the market policy rate used to derive the prevailing market APR.
 // BNPL's spread is never actually charged (its APR is fixed at 0%) — it exists
-// only as the comparison yardstick behind take-up/pricing formulas.
+// only as the comparison yardstick behind take-up/pricing formulas, so it's
+// left at its original scale rather than cut along with the rest here.
+//
+// Cut roughly 30% off every real product/tier below (from the table this
+// replaced — card A:8.0 B:10.0 C:13.0 D:17.0 E:21.0, and so on down the
+// board). Even prime-only, worst-case-declined-at-740 lending was still
+// comfortably profitable: a tier-B card carrying its true ~0.8% expected
+// annual loss was still pricing a ~10pt spread over the policy rate — a
+// wide margin at any tier, not just the risky end. This thins it everywhere
+// while keeping the same relative shape between tiers and products.
 const MKT_SPREAD = {
-  card:     { A:8.0, B:10.0, C:13.0, D:17.0, E:21.0 },
-  personal: { A:3.0, B:5.0,  C:8.0,  D:13.0, E:18.0 },
-  auto:     { A:1.0, B:2.0,  C:4.0,  D:7.0,  E:11.0 },
-  mortgage: { A:0.8, B:1.2,  C:2.0,  D:3.5,  E:5.5  },
-  heloc:      { A:2.0, B:3.2,  C:5.0,  D:8.0,  E:12.0 },
-  studentloan:{ A:1.5, B:2.5,  C:4.0,  D:6.0,  E:9.0  },
-  sbloan:     { A:2.5, B:4.0,  C:6.5,  D:10.0, E:14.0 },
-  securedcard:{ A:5.0, B:5.0,  C:5.0,  D:5.0,  E:5.0  },
+  card:     { A:5.5, B:7.0,  C:9.0,  D:12.0, E:14.5 },
+  personal: { A:2.0, B:3.5,  C:5.5,  D:9.0,  E:12.5 },
+  auto:     { A:0.7, B:1.4,  C:2.8,  D:5.0,  E:7.5  },
+  mortgage: { A:0.6, B:0.85, C:1.4,  D:2.5,  E:3.8  },
+  heloc:      { A:1.4, B:2.2,  C:3.5,  D:5.5,  E:8.5  },
+  studentloan:{ A:1.0, B:1.75, C:2.8,  D:4.2,  E:6.3  },
+  sbloan:     { A:1.75,B:2.8,  C:4.5,  D:7.0,  E:9.8  },
+  securedcard:{ A:3.5, B:3.5,  C:3.5,  D:3.5,  E:3.5  },
   bnpl:       { A:8.0, B:10.0, C:13.0, D:17.0, E:21.0 },
-  bnplplus:   { A:4.0, B:6.0,  C:9.0,  D:13.0, E:18.0 },
+  bnplplus:   { A:2.8, B:4.2,  C:6.3,  D:9.0,  E:12.5 },
 };
 const DEP_MKT_MULT = { checking:0.08, savings:0.55, cd:0.80 };  // of the market policy rate
 
@@ -2136,6 +2156,7 @@ function closeAccount(a, why){
 }
 function lgdOf(a){
   let lgd = CFG.LGD[a.product];
+  if(S.macro.econ === "recession") lgd *= CFG.RECESSION_LGD_MULT;
   const h = S.events.housing;
   if(h && S.day < h.until && (a.product === "mortgage" || a.product === "heloc")) lgd *= CFG.EVT_HOUSING_LGD_MULT;
   // an SBA-style guarantee covers its share of the actual loss, not just the capital charge
@@ -3395,7 +3416,7 @@ function saleQuote(product, share){
   let bal = 0, el = 0, n = 0, undrawn = 0;
   for(const a of S.loans){
     if(a.product !== product || isDead(a)) continue;
-    n++; bal += a.balance; el += a.balance*pdAnnual(a)*CFG.LGD[product];
+    n++; bal += a.balance; el += a.balance*pdAnnual(a)*lgdOf(a);
     if(product === "card") undrawn += Math.max(0, a.limit - a.balance);
   }
   const elRate = bal > 0 ? el/bal : 0;
@@ -3579,9 +3600,12 @@ function updateMacro(){
     m.econ = S.dev.econLock;
   } else {
     const r = rnd();
-    if(m.econ === "normal"){ if(r < 0.030) m.econ = "recession"; else if(r < 0.060) m.econ = "boom"; }
-    else if(m.econ === "recession"){ if(r < 0.115) m.econ = "normal"; }
-    else { if(r < 0.105) m.econ = "normal"; }
+    if(m.econ === "normal"){
+      if(r < CFG.ECON_TO_RECESSION) m.econ = "recession";
+      else if(r < CFG.ECON_TO_RECESSION + CFG.ECON_TO_BOOM) m.econ = "boom";
+    }
+    else if(m.econ === "recession"){ if(r < CFG.ECON_RECESSION_EXIT) m.econ = "normal"; }
+    else { if(r < CFG.ECON_BOOM_EXIT) m.econ = "normal"; }
   }
   if(m.econ !== was){
     m.econMonths = 0;
@@ -4733,7 +4757,7 @@ function renderOverview(){
 
   // alerts
   const A = [];
-  if(S.run.active) A.push(["bad","!",`Bank run in progress — ${S.run.daysLeft} days of elevated withdrawals left. Raising the emergency APY premium slows the outflow but costs interest expense.`]);
+  if(S.run.active) A.push(["bad","!",`Bank run in progress — ${S.run.daysLeft} days of elevated withdrawals left. Raising the emergency APY premium slows the outflow but costs interest expense. This is a liquidity test, not a capital one — a strong capital ratio doesn't help if the cash and securities to pay depositors aren't there; only cash on hand, sellable securities, and a calmer withdrawal pace get you through it.`]);
   if(S.reg.restricted) A.push(["bad","!","Consent order active: no new credit until the capital ratio recovers."]);
   else if(S.reg.capStrikes>0) A.push(["warn","!",`Capital warning outstanding (${S.reg.capStrikes} strike). Two more months below ${pct(CFG.REQ_CAPITAL,0)} and the charter is revoked.`]);
   if(m.car < CFG.REQ_CAPITAL) A.push(["bad","▼",`Capital ratio ${pct(m.car)} is below the ${pct(CFG.REQ_CAPITAL,0)} minimum. Stop lending, shrink risk-weighted assets, or earn your way out.`]);
@@ -4793,7 +4817,7 @@ function analyseOffer(app, offer){
   const payment = monthlyObligation(app.product, amount, apr, term);
   const dti = (app.debtPmt + payment)/app.income;
   const pd = pdEstimate(app, dti);
-  const lgd = CFG.LGD[app.product];
+  const lgd = CFG.LGD[app.product] * (S.macro.econ === "recession" ? CFG.RECESSION_LGD_MULT : 1);
   const expLoss = amount*pd*lgd;
   const cap = capacityCheck(app.product, amount, true);
   const soft = capacityCheck(app.product, amount, false);
@@ -6196,15 +6220,21 @@ function buildSettings(){
     headRow("Regulatory minimums") +
     row("Reserve ratio (cash ÷ deposits)", pct(CFG.REQ_RESERVE,0)) +
     row("Capital ratio (equity ÷ RWA)", pct(CFG.REQ_CAPITAL,0)) +
+    `<div class="hint" style="margin:4px 0 9px">These measure two different things. Capital is solvency — do
+      assets exceed liabilities by enough to absorb losses? Reserve is liquidity — is there enough cash on hand,
+      right now, to pay depositors who want their money back? A bank can be extremely well-capitalised and still
+      lose a bank run if its assets are all illiquid loans with nothing left to sell; capital ratio plays no role
+      in surviving a run — only cash, sellable securities, and the emergency APY lever to slow withdrawals do.</div>` +
     row("Loan risk weights", "cash 0% · secured 50% · unsecured 100%") +
     row("Securities risk weights", "Treasuries 0% · agency/muni 20% · corporate 50%") +
     row("Card undrawn conversion factor", pct(CFG.CCF_CARD,0)) +
     headRow("Annual default probability by tier") +
     TIERS.map(t=>row(`${t} · ${TIER_LABEL[t]} <span class="dim">${TIER_NAME[t]}</span>`, pct(CFG.PD[t],2), null, true)).join("") +
     row("Product multiplier", "mortgage 0.55× · auto 0.80× · personal 1.15× · card 1.30×", "muted", true) +
-    row("Macro multiplier", "recession 2.5× · normal 0.85× · boom 0.6×", "muted", true) +
+    row("Macro default multiplier", `recession ${CFG.MACRO_PD.recession}× · normal ${CFG.MACRO_PD.normal}× · boom ${CFG.MACRO_PD.boom}×`, "muted", true) +
     headRow("Loss given default") +
     Object.keys(CFG.LGD).map(k=>row(PRODUCT_LABEL[k], pct(CFG.LGD[k],0), null, true)).join("") +
+    row("In a recession", `${CFG.RECESSION_LGD_MULT}× the numbers above — collateral and recovery values fall too, not just default counts`, "muted", true) +
     headRow("Delinquency") +
     row("Monthly cure probability", `${pct(CFG.CURE.unsecured,0)} unsecured · ${pct(CFG.CURE.secured,0)} secured`, null, true) +
     row("Charge-off at", CFG.CHARGEOFF_AT + " missed payments (120 DPD)", null, true) +

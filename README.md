@@ -1,5 +1,10 @@
 # Reserve
 
+> **Dependency-free JavaScript.** The whole game is one self-contained
+> `index.html` of plain JavaScript, HTML and CSS: no TypeScript, no build
+> step, no framework, no libraries, and nothing fetched from a CDN. Open
+> the file and play.
+
 A browser-based bank operator simulation. You own the charter: you set the rate sheet, write the
 underwriting policy, decide who gets credit, and answer for the balance sheet. There is no win
 condition — only how long you last and how large you get before the regulator, the depositors, or
